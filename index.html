@@ -48,7 +48,7 @@
 
           // --- FIX 2: USE the NEW client variable name ---
           supabaseClient.channel('public:prospects')
-            .on('postgres_changes', { event: '*', schema: 'public', table: 'prospects' }, (payload) => {
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'mediadb' }, (payload) => {
               console.log('Real-time change received!', payload);
               this.handleRealtimeChange(payload);
             })
