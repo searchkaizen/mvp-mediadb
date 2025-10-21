@@ -2,26 +2,322 @@
 <html lang="en" class="h-full">
 <head>
   <meta charset="utf-8" />
-  <title>Media Prospect Manager (MVP)</title>
+  <title>Media Prospect Manager</title>
+  <base target="_top">
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
-  <!-- Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
-  <!-- Alpine.js -->
+  
   <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+  <script>
+    // --- 4. PASTE YOUR KEYS HERE ---
+    const SUPABASE_URL = 'https://mfjymrrykhvfkivtvgit.supabase.co';
+    const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1manltcnJ5a2h2ZmtpdnR2Z2l0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjEwNzY1MzksImV4cCI6MjA3NjY1MjUzOX0.wgn7fZgL8vmedKWmJ8BNfwbaOzZ4ZFltqcDrkEDvsnw';
+
+    // 5. Initialize the Supabase client
+    const supabase = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+
+    function prospectApp() {
+      return {
+        db: [],
+        pasteInput: '',
+        ingestSummary: { total: 0, newCount: 0, dupeCount: 0, invalidCount: 0 },
+        search: '',
+        filterStatus: '',
+        hideRejected: false,
+        showAddForm: false,
+        addFormCampaign: '', 
+        campaigns: [],
+        selectedCampaign: 'all',
+        newCampaignName: '',
+        showNewCampaignInput: false,
+        statuses: [
+          { value: 'unvetted', label: 'Unvetted' },
+          { value: 'good', label: 'Good Fit' },
+          { value: 'rejected', label: 'Rejected' },
+          { value: 'contacted', label: 'Contacted' },
+          { value: 'done', label: 'Done' }
+        ],
+
+        async init() {
+          // 1. Load the initial data
+          await this.load();
+          // 2. Derive the campaign list from the data
+          this.deriveCampaigns();
+
+          // 3. *** THIS IS THE FIX ***
+          // Listen for ANY changes to the 'prospects' table
+          supabase.channel('public:prospects')
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'prospects' }, (payload) => {
+              console.log('Real-time change received!', payload);
+              this.handleRealtimeChange(payload);
+            })
+            .subscribe();
+        },
+
+        // This function handles all live updates
+        handleRealtimeChange(payload) {
+          let campaignListChanged = false;
+
+          if (payload.eventType === 'INSERT') {
+            // Add the new row to the top of our list
+            this.db.unshift(payload.new);
+            // Check if it's a new campaign
+            if (payload.new.campaign && !this.campaigns.includes(payload.new.campaign)) {
+              campaignListChanged = true;
+            }
+          }
+
+          if (payload.eventType === 'UPDATE') {
+            // Find the item in our 'db' array and update it
+            let item = this.db.find(r => r.id === payload.new.id);
+            if (item) {
+              Object.assign(item, payload.new); // Merges changes
+              // Check if it's a new campaign
+              if (payload.new.campaign && !this.campaigns.includes(payload.new.campaign)) {
+                campaignListChanged = true;
+              }
+            }
+          }
+
+          if (payload.eventType === 'DELETE') {
+            // Remove the item from our 'db' array
+            this.db = this.db.filter(r => r.id !== payload.old.id);
+          }
+
+          if (campaignListChanged) {
+            this.deriveCampaigns(); // Re-build the campaign dropdown
+          }
+        },
+
+        // Re-builds the campaign list from the 'db' array
+        deriveCampaigns() {
+          const allCampaigns = this.db
+            .map(r => r.campaign)
+            .filter(Boolean); // Remove null/empty
+          this.campaigns = [...new Set(allCampaigns)].sort();
+        },
+
+        // Loads all data from Supabase
+        async load() {
+          const { data, error } = await supabase
+            .from('prospects')
+            .select('*')
+            .order('created_at', { ascending: false }); // Sort by new
+          
+          if (error) {
+            alert('Error loading data: ' + error.message);
+          } else {
+            this.db = data;
+          }
+        },
+
+        // Adds new prospects to Supabase
+        async ingest() {
+          const campaignToAssign = this.addFormCampaign === 'unassigned' ? '' : this.addFormCampaign;
+          
+          if (this.addFormCampaign === '') {
+            alert('Please select a campaign to assign these prospects to.');
+            return;
+          }
+          
+          const lines = (this.pasteInput || '').split('\n').map(l => l.trim()).filter(Boolean);
+          if (lines.length === 0) return;
+
+          let newRows = [];
+          for (const line of lines) {
+            const domain = this.normalizeDomain(line.split(',')[0].trim());
+            if (!domain) continue;
+            // Check for duplicates in the *local* db first
+            if (this.db.some(r => r.domain === domain)) continue;
+
+            newRows.push({
+              domain: domain,
+              campaign: campaignToAssign,
+              status: 'unvetted'
+              // Supabase handles 'id' and 'created_at' automatically
+            });
+          }
+
+          // Filter duplicates from the batch itself
+          const uniqueNewRows = newRows.filter(
+            (row, index, self) => index === self.findIndex(r => r.domain === row.domain)
+          );
+
+          if (uniqueNewRows.length > 0) {
+            const { error } = await supabase.from('prospects').insert(uniqueNewRows);
+            
+            if (error) {
+              alert('Error creating prospects: ' + error.message);
+            } else {
+              // SUCCESS! The real-time listener will update the UI automatically.
+              this.pasteInput = '';
+              this.ingestSummary = { total: lines.length, newCount: uniqueNewRows.length, dupeCount: lines.length - uniqueNewRows.length, invalidCount: 0 };
+              this.showAddForm = false;
+            }
+          } else {
+             this.ingestSummary = { total: lines.length, newCount: 0, dupeCount: lines.length, invalidCount: 0 };
+          }
+        },
+
+        // Updates a single prospect
+        async updateProspect(p) {
+          // This function is now triggered by @change, so 'p' is the local object
+          // We just tell Supabase to update the row with this id
+          const { error } = await supabase
+            .from('prospects')
+            .update({
+              status: p.status,
+              contact: p.contact,
+              notes: p.notes,
+              campaign: p.campaign
+            })
+            .eq('id', p.id); // Where id matches p.id
+
+          if (error) {
+            alert('Error updating prospect: ' + error.message);
+          }
+          // The real-time listener will handle the update
+        },
+
+        // Deletes a single prospect
+        async deleteProspect(id) {
+          if (!confirm('Delete this prospect?')) return;
+          
+          const { error } = await supabase
+            .from('prospects')
+            .delete()
+            .eq('id', id);
+
+          if (error) {
+            alert('Error deleting prospect: ' + error.message);
+          }
+          // The real-time listener will handle the update
+        },
+
+        // --- HELPER FUNCTIONS (Mostly the same) ---
+
+        normalizeDomain(input) {
+          let s = (input || '').trim().toLowerCase();
+          s = s.replace(/^(https?:\/\/|ftp:\/\/)/, '').replace(/^[^@]+@/, '');
+          s = s.split(/[/?#]/)[0].split(':')[0].replace(/^www\./, '').replace(/\.$/, '');
+          if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(s)) return null;
+          return s;
+        },
+
+        // This just adds to the local list, which is fine
+        addNewCampaign() {
+            const name = this.newCampaignName.trim();
+            if (!name) {
+                alert('Please enter a campaign name.');
+                return;
+            }
+            if (this.campaigns.some(c => c.toLowerCase() === name.toLowerCase())) {
+                alert('Campaign already exists.');
+                return;
+            }
+            this.campaigns.push(name);
+            this.campaigns.sort();
+            this.addFormCampaign = name; 
+            this.newCampaignName = '';
+            this.showNewCampaignInput = false;
+        },
+
+        get filtered() {
+          let rows = this.db.slice();
+
+          if (this.selectedCampaign !== 'all') {
+            rows = rows.filter(r => r.campaign === this.selectedCampaign || (this.selectedCampaign === '' && !r.campaign));
+          }
+          if (this.filterStatus) {
+            rows = rows.filter(r => r.status === this.filterStatus);
+          }
+          if (this.hideRejected) {
+            rows = rows.filter(r => r.status !== 'rejected');
+          }
+          const q = this.search.trim().toLowerCase();
+          if (q) {
+            rows = rows.filter(r =>
+              r.domain.includes(q) ||
+              (r.contact || '').toLowerCase().includes(q) ||
+              (r.notes || '').toLowerCase().includes(q) ||
+              (r.campaign || '').toLowerCase().includes(q)
+            );
+          }
+          // Sort by the 'created_at' column
+          return rows.sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
+        },
+
+        countByStatus(status) {
+          let relevantData = this.db;
+          if (this.selectedCampaign !== 'all') {
+              relevantData = this.db.filter(r => r.campaign === this.selectedCampaign || (this.selectedCampaign === '' && !r.campaign));
+          }
+          return relevantData.filter(r => r.status === status).length;
+        },
+
+        // Formats the 'created_at' column
+        formatDate(iso) {
+          if (!iso) return '';
+          const d = new Date(iso);
+          return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        },
+
+        exportCSV(all) {
+          let rowsToExport;
+          if (all) {
+              if (this.selectedCampaign !== 'all') {
+                  rowsToExport = this.db.filter(r => r.campaign === this.selectedCampaign || (this.selectedCampaign === '' && !r.campaign));
+              } else {
+                  rowsToExport = this.db.slice();
+              }
+              rowsToExport.sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
+          } else {
+              rowsToExport = this.filtered;
+          }
+
+          // Update headers for Supabase columns
+          const headers = ['id', 'domain', 'status', 'contact', 'notes', 'created_at', 'campaign'];
+          const escape = v => `"${String(v || '').replace(/"/g,'""')}"`;
+          const csv = [headers.join(',')].concat(
+              rowsToExport.map(r => headers.map(h => escape(r[h])).join(','))
+          ).join('\n');
+
+          const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          let campaignName = 'all_campaigns';
+          if (this.selectedCampaign === '') {
+              campaignName = 'unassigned';
+          } else if (this.selectedCampaign !== 'all') {
+              campaignName = this.selectedCampaign.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+          }
+          a.download = `prospects_${campaignName}_${all?'all':'filtered'}_${new Date().toISOString().replace(/[:.]/g,'-')}.csv`;
+          a.click();
+          URL.revokeObjectURL(url);
+        },
+      };
+    }
+  </script>
 
   <style>
     td, th { white-space: nowrap; }
     td textarea { min-height: 2.25rem; }
   </style>
 </head>
+
 <body class="h-full bg-gray-50 text-gray-900">
 <div class="max-w-7xl mx-auto p-4" x-data="prospectApp()" x-init="init()">
 
   <div class="flex items-start sm:items-center justify-between gap-4 flex-col sm:flex-row">
     <div>
       <h1 class="text-2xl font-semibold">Media Prospect Manager</h1>
-      <p class="text-sm text-gray-600">Shared via Google Sheets API — paste, vet, and track prospects across the team.</p>
+      <p class="text-sm text-gray-600">Now powered by Supabase — fast, real-time, and jank-free.</p>
     </div>
     <div class="flex gap-2">
       <button @click="exportCSV(false)"
@@ -40,23 +336,61 @@
     </template>
   </div>
 
-  <div class="mt-6 rounded-lg border bg-white p-4">
-    <h2 class="font-medium mb-3">Add Prospects (Paste Only)</h2>
+  <div class="mt-6 text-right">
+      <button @click="showAddForm = true" x-show="!showAddForm"
+              class="px-4 py-2 rounded-md text-white bg-gray-900 hover:bg-gray-800">
+        Add New Prospects
+      </button>
+  </div>
+
+  <div class="mt-6 rounded-lg border bg-white p-4" x-show="showAddForm" x-transition>
+    <div class="flex justify-between items-center mb-3">
+      <h2 class="font-medium">Add Prospects (Paste Only)</h2>
+      <button @click="showAddForm = false; ingestSummary = { total: 0 }; pasteInput = ''" class="text-sm text-gray-600 hover:underline">Cancel</button>
+    </div>
     <div class="grid md:grid-cols-3 gap-3">
       <div class="md:col-span-2">
         <label class="block text-sm text-gray-700 mb-1">Paste list of domains or URLs (one per line)</label>
         <textarea x-model="pasteInput"
                   placeholder="example.com
 https://www.site.com/about
-blog.domain.co.uk/article"
+blog.domain.co.uk"
                   class="w-full border rounded-md p-2 h-32"></textarea>
-        <p class="text-xs text-gray-500 mt-1">Cleans to root domains, lowercases, and skips duplicates (auto-synced to Sheets).</p>
+        <p class="text-xs text-gray-500 mt-1">Cleans to root domains, lowercases, and skips duplicates. Assign a campaign on the right.</p>
       </div>
-      <div class="flex md:block gap-2 md:gap-0">
+      
+      <div>
+        <label class="block text-sm text-gray-700 mb-1 flex justify-between items-center">
+          <span>Assign to Campaign</span>
+          <button @click="showNewCampaignInput = !showNewCampaignInput" x-show="!showNewCampaignInput"
+                  class="text-xs text-blue-600 hover:underline focus:outline-none">
+            + New
+          </button>
+        </label>
+        <select x-model="addFormCampaign" class="w-full border rounded-md p-2">
+          <option value="">-- Select Campaign --</option>
+          <template x-for="campaign in campaigns" :key="campaign">
+            <option :value="campaign" x-text="campaign"></option>
+          </template>
+          <option value="unassigned">Unassigned</option>
+        </select>
+        
+        <div x-show="showNewCampaignInput" class="mt-2 flex gap-2" x-transition>
+          <input type="text" x-model="newCampaignName" placeholder="New campaign name..."
+                 class="flex-grow border rounded-md p-1 text-sm">
+          <button @click="addNewCampaign()"
+                 class="px-2 py-1 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700">Add</button>
+          <button @click="showNewCampaignInput = false; newCampaignName = ''"
+                 class="px-2 py-1 text-sm text-gray-600 hover:underline">Cancel</button>
+        </div>
+    
         <button @click="ingest()"
-                class="mt-6 md:mt-0 h-10 md:h-auto md:w-full px-3 py-2 rounded-md text-white bg-gray-900 hover:bg-gray-800">Add Prospects</button>
+                class="mt-4 w-full px-3 py-2 rounded-md text-white bg-gray-900 hover:bg-gray-800">
+          Add Prospects
+        </button>
       </div>
     </div>
+    
     <template x-if="ingestSummary.total > 0">
       <div class="mt-3 text-sm">
         <span class="inline-block mr-3">Total: <strong x-text="ingestSummary.total"></strong></span>
@@ -71,8 +405,20 @@ blog.domain.co.uk/article"
     <div class="md:col-span-2">
       <label class="text-sm text-gray-700">Search</label>
       <input type="search" x-model.debounce.300ms="search"
-             placeholder="Search domain, contact info, or notes..."
+             placeholder="Search domain, contact info, notes, or campaign..."
              class="w-full border rounded-md p-2"/>
+    </div>
+    <div>
+      <label class="text-sm text-gray-700 flex justify-between items-center">
+        <span>Filter by Campaign</span>
+      </label>
+      <select x-model="selectedCampaign" class="w-full border rounded-md p-2">
+        <option value="all">All Campaigns</option>
+        <template x-for="campaign in campaigns" :key="campaign">
+          <option :value="campaign" x-text="campaign"></option>
+        </template>
+        <option value="">Unassigned</option>
+      </select>
     </div>
     <div>
       <label class="text-sm text-gray-700">Filter by Status</label>
@@ -100,12 +446,13 @@ blog.domain.co.uk/article"
           <th class="p-2 text-left">Contact Info</th>
           <th class="p-2 text-left">Notes</th>
           <th class="p-2 text-left">Date Added</th>
+          <th class="p-2 text-left">Campaign</th>
           <th class="p-2 text-left">Actions</th>
         </tr>
       </thead>
       <tbody>
         <template x-if="filtered.length === 0">
-          <tr><td colspan="6" class="p-4 text-center text-gray-500">No prospects match your filters.</td></tr>
+          <tr><td colspan="7" class="p-4 text-center text-gray-500">No prospects match your filters.</td></tr>
         </template>
         <template x-for="p in filtered" :key="p.id">
           <tr class="border-t">
@@ -129,7 +476,19 @@ blog.domain.co.uk/article"
                         x-model="p.notes"
                         @change="updateProspect(p)"></textarea>
             </td>
-            <td class="p-2 text-gray-700" x-text="formatDate(p.dateAdded)"></td>
+            
+            <td class="p-2 text-gray-700" x-text="formatDate(p.created_at)"></td>
+            
+            <td class="p-2">
+              <select class="border rounded-md p-1"
+                      x-model="p.campaign"
+                      @change="updateProspect(p)">
+                <option value="">Unassigned</option>
+                <template x-for="cName in campaigns" :key="cName">
+                  <option :value="cName" x-text="cName"></option>
+                </template>
+              </select>
+            </td>
             <td class="p-2">
               <button class="text-xs text-red-600 hover:underline" @click="deleteProspect(p.id)">Delete</button>
             </td>
@@ -140,134 +499,5 @@ blog.domain.co.uk/article"
   </div>
 
 </div>
-
-<script>
-function prospectApp() {
-  const API_URL = "https://script.google.com/macros/s/AKfycbyytgIIflT1h1FfaDma_PMLutQYgZrKpyZiAvEwjdehD5mDsLpj0d6Ao7TFsVk1dcuz/exec";
-
-  return {
-    db: [],
-    pasteInput: '',
-    ingestSummary: { total: 0, newCount: 0, dupeCount: 0, invalidCount: 0 },
-    search: '',
-    filterStatus: '',
-    hideRejected: false,
-
-    statuses: [
-      { value: 'unvetted', label: 'Unvetted' },
-      { value: 'good', label: 'Good Fit' },
-      { value: 'rejected', label: 'Rejected' },
-      { value: 'contacted', label: 'Contacted' },
-      { value: 'done', label: 'Done' }
-    ],
-
-    async init() {
-      await this.load();
-    },
-
-    async load() {
-      const res = await fetch(API_URL);
-      const json = await res.json();
-      this.db = json.data || [];
-    },
-
-    async ingest() {
-      const lines = (this.pasteInput || '').split('\n').map(l => l.trim()).filter(Boolean);
-      const total = lines.length;
-      let newCount = 0, dupeCount = 0, invalidCount = 0;
-
-      for (const line of lines) {
-        const domain = this.normalizeDomain(line);
-        if (!domain) { invalidCount++; continue; }
-        if (this.db.some(r => r.domain === domain)) { dupeCount++; continue; }
-
-        const newProspect = {
-          id: crypto.randomUUID(),
-          domain,
-          status: 'unvetted',
-          contact: '',
-          notes: '',
-          dateAdded: new Date().toISOString()
-        };
-
-        await fetch(API_URL, {
-          method: 'POST',
-          body: JSON.stringify(newProspect),
-          headers: { 'Content-Type': 'application/json' }
-        });
-
-        this.db.push(newProspect);
-        newCount++;
-      }
-
-      this.pasteInput = '';
-      this.ingestSummary = { total, newCount, dupeCount, invalidCount };
-    },
-
-    normalizeDomain(input) {
-      let s = (input || '').trim().toLowerCase();
-      s = s.replace(/^(https?:\/\/|ftp:\/\/)/, '').replace(/^[^@]+@/, '');
-      s = s.split(/[/?#]/)[0].split(':')[0].replace(/^www\./, '').replace(/\.$/, '');
-      if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(s)) return null;
-      return s;
-    },
-
-    get filtered() {
-      let rows = this.db.slice();
-      if (this.hideRejected) rows = rows.filter(r => r.status !== 'rejected');
-      if (this.filterStatus) rows = rows.filter(r => r.status === this.filterStatus);
-      const q = this.search.trim().toLowerCase();
-      if (q) rows = rows.filter(r =>
-        r.domain.includes(q) ||
-        (r.contact || '').toLowerCase().includes(q) ||
-        (r.notes || '').toLowerCase().includes(q)
-      );
-      return rows.sort((a,b) => new Date(b.dateAdded) - new Date(a.dateAdded));
-    },
-
-    async updateProspect(p) {
-      await fetch(API_URL, {
-        method: 'PUT',
-        body: JSON.stringify(p),
-        headers: { 'Content-Type': 'application/json' }
-      });
-    },
-
-    async deleteProspect(id) {
-      if (!confirm('Delete this prospect?')) return;
-      await fetch(API_URL, {
-        method: 'DELETE',
-        body: JSON.stringify({ id }),
-        headers: { 'Content-Type': 'application/json' }
-      });
-      this.db = this.db.filter(r => r.id !== id);
-    },
-
-    countByStatus(status) {
-      return this.db.filter(r => r.status === status).length;
-    },
-
-    formatDate(iso) {
-      if (!iso) return '';
-      const d = new Date(iso);
-      return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    },
-
-    exportCSV(all) {
-      const rows = all ? this.db : this.filtered;
-      const headers = ['domain','status','contact','notes','dateAdded'];
-      const escape = v => `"${String(v || '').replace(/"/g,'""')}"`;
-      const csv = [headers.join(',')].concat(rows.map(r => headers.map(h => escape(r[h])).join(','))).join('\n');
-      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `prospects_${all?'all':'filtered'}_${new Date().toISOString().replace(/[:.]/g,'-')}.csv`;
-      a.click();
-      URL.revokeObjectURL(url);
-    },
-  };
-}
-</script>
 </body>
 </html>
