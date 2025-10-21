@@ -12,11 +12,10 @@
 
   <script>
     // --- PASTE YOUR KEYS HERE ---
-    const SUPABASE_URL = 'https://mfjymrrykhvfkivtvgit.supabase.co'; // <<< PASTE YOUR URL
-    const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1manltcnJ5a2h2ZmtpdnR2Z2l0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjEwNzY1MzksImV4cCI6MjA3NjY1MjUzOX0.wgn7fZgL8vmedKWmJ8BNfwbaOzZ4ZFltqcDrkEDvsnw'; // <<< PASTE YOUR KEY
+    const SUPABASE_URL = 'https://mfjymrrykhvfkivtvgit.supabase.co'; // <<< YOUR URL
+    const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1manltcnJ5a2h2ZmtpdnR2Z2l0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjEwNzY1MzksImV4cCI6MjA3NjY1MjUzOX0.wgn7fZgL8vmedKWmJ8BNfwbaOzZ4ZFltqcDrkEDvsnw'; // <<< YOUR KEY
 
-    // --- FIX 1: RENAME THE CLIENT VARIABLE ---
-    // Initialize the Supabase client using the global 'supabase' object
+    // Initialize the Supabase client
     const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 
@@ -46,9 +45,9 @@
           await this.load();
           this.deriveCampaigns();
 
-          // --- FIX 2: USE the NEW client variable name ---
-          supabaseClient.channel('public:prospects')
-            .on('postgres_changes', { event: '*', schema: 'public', table: 'mediadb' }, (payload) => {
+          // --- FIX 1: Listen to the correct table 'mediadb' ---
+          supabaseClient.channel('public:mediadb') // Changed from 'prospects'
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'mediadb' }, (payload) => { // Changed from 'prospects'
               console.log('Real-time change received!', payload);
               this.handleRealtimeChange(payload);
             })
@@ -56,7 +55,6 @@
         },
 
         handleRealtimeChange(payload) {
-          // ...(rest of the function is the same)...
           let campaignListChanged = false;
 
           if (payload.eventType === 'INSERT') {
@@ -78,7 +76,6 @@
 
           if (payload.eventType === 'DELETE') {
             this.db = this.db.filter(r => r.id !== payload.old.id);
-             // Also re-derive campaigns in case the deleted item had the last instance of a campaign
             campaignListChanged = true;
           }
 
@@ -95,9 +92,9 @@
         },
 
         async load() {
-          // --- FIX 3: USE the NEW client variable name ---
+          // --- FIX 2: Load from the correct table 'mediadb' ---
           const { data, error } = await supabaseClient
-            .from('prospects')
+            .from('mediadb') // Changed from 'prospects'
             .select('*')
             .order('created_at', { ascending: false });
 
@@ -137,8 +134,8 @@
           );
 
           if (uniqueNewRows.length > 0) {
-             // --- FIX 4: USE the NEW client variable name ---
-            const { error } = await supabaseClient.from('prospects').insert(uniqueNewRows);
+             // --- FIX 3: Insert into the correct table 'mediadb' ---
+            const { error } = await supabaseClient.from('mediadb').insert(uniqueNewRows); // Changed from 'prospects'
 
             if (error) {
               alert('Error creating prospects: ' + error.message);
@@ -153,9 +150,9 @@
         },
 
         async updateProspect(p) {
-          // --- FIX 5: USE the NEW client variable name ---
+          // --- FIX 4: Update the correct table 'mediadb' ---
           const { error } = await supabaseClient
-            .from('prospects')
+            .from('mediadb') // Changed from 'prospects'
             .update({
               status: p.status,
               contact: p.contact,
@@ -172,9 +169,9 @@
         async deleteProspect(id) {
           if (!confirm('Delete this prospect?')) return;
 
-          // --- FIX 6: USE the NEW client variable name ---
+          // --- FIX 5: Delete from the correct table 'mediadb' ---
           const { error } = await supabaseClient
-            .from('prospects')
+            .from('mediadb') // Changed from 'prospects'
             .delete()
             .eq('id', id);
 
@@ -184,7 +181,6 @@
         },
 
         // --- HELPER FUNCTIONS ---
-        // ...(These are all the same, no changes needed)...
         normalizeDomain(input) {
           let s = (input || '').trim().toLowerCase();
           s = s.replace(/^(https?:\/\/|ftp:\/\/)/, '').replace(/^[^@]+@/, '');
