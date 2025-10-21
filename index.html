@@ -45,13 +45,25 @@
           await this.load();
           this.deriveCampaigns();
 
-          // --- FIX 1: Listen to the correct table 'mediadb' ---
-          supabaseClient.channel('public:mediadb') // Changed from 'prospects'
-            .on('postgres_changes', { event: '*', schema: 'public', table: 'mediadb' }, (payload) => { // Changed from 'prospects'
-              console.log('Real-time change received!', payload);
-              this.handleRealtimeChange(payload);
-            })
-            .subscribe();
+          // Listen to the 'mediadb' table
+          supabaseClient.channel('public:mediadb')
+            .on(
+              'postgres_changes',
+              { event: '*', schema: 'public', table: 'mediadb' },
+              (payload) => {
+                console.log('Real-time change received!', payload);
+                this.handleRealtimeChange(payload);
+              }
+            )
+            // --- ADDED CALLBACK TO CHECK STATUS ---
+            .subscribe((status, err) => {
+              if (status === 'SUBSCRIBED') {
+                console.log('✅ Successfully subscribed to real-time updates!');
+              } else {
+                console.error('❌ Failed to subscribe to real-time updates:', status, err || '');
+              }
+            });
+            // --- END OF ADDED CALLBACK ---
         },
 
         handleRealtimeChange(payload) {
@@ -92,9 +104,8 @@
         },
 
         async load() {
-          // --- FIX 2: Load from the correct table 'mediadb' ---
           const { data, error } = await supabaseClient
-            .from('mediadb') // Changed from 'prospects'
+            .from('mediadb')
             .select('*')
             .order('created_at', { ascending: false });
 
@@ -134,8 +145,7 @@
           );
 
           if (uniqueNewRows.length > 0) {
-             // --- FIX 3: Insert into the correct table 'mediadb' ---
-            const { error } = await supabaseClient.from('mediadb').insert(uniqueNewRows); // Changed from 'prospects'
+            const { error } = await supabaseClient.from('mediadb').insert(uniqueNewRows);
 
             if (error) {
               alert('Error creating prospects: ' + error.message);
@@ -150,9 +160,8 @@
         },
 
         async updateProspect(p) {
-          // --- FIX 4: Update the correct table 'mediadb' ---
           const { error } = await supabaseClient
-            .from('mediadb') // Changed from 'prospects'
+            .from('mediadb')
             .update({
               status: p.status,
               contact: p.contact,
@@ -169,9 +178,8 @@
         async deleteProspect(id) {
           if (!confirm('Delete this prospect?')) return;
 
-          // --- FIX 5: Delete from the correct table 'mediadb' ---
           const { error } = await supabaseClient
-            .from('mediadb') // Changed from 'prospects'
+            .from('mediadb')
             .delete()
             .eq('id', id);
 
