@@ -7,18 +7,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <script src="https://cdn.tailwindcss.com"></script>
-  
   <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
-
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 
   <script>
-    // --- 4. PASTE YOUR KEYS HERE ---
-    const SUPABASE_URL = 'https://mfjymrrykhvfkivtvgit.supabase.co';
-    const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1manltcnJ5a2h2ZmtpdnR2Z2l0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjEwNzY1MzksImV4cCI6MjA3NjY1MjUzOX0.wgn7fZgL8vmedKWmJ8BNfwbaOzZ4ZFltqcDrkEDvsnw';
+    // --- PASTE YOUR KEYS HERE ---
+    const SUPABASE_URL = 'https://mfjymrrykhvfkivtvgit.supabase.co'; // <<< PASTE YOUR URL
+    const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1manltcnJ5a2h2ZmtpdnR2Z2l0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjEwNzY1MzksImV4cCI6MjA3NjY1MjUzOX0.wgn7fZgL8vmedKWmJ8BNfwbaOzZ4ZFltqcDrkEDvsnw'; // <<< PASTE YOUR KEY
 
-    // 5. Initialize the Supabase client
-    const supabase = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+    // --- FIX 1: RENAME THE CLIENT VARIABLE ---
+    // Initialize the Supabase client using the global 'supabase' object
+    const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 
     function prospectApp() {
@@ -30,7 +29,7 @@
         filterStatus: '',
         hideRejected: false,
         showAddForm: false,
-        addFormCampaign: '', 
+        addFormCampaign: '',
         campaigns: [],
         selectedCampaign: 'all',
         newCampaignName: '',
@@ -44,14 +43,11 @@
         ],
 
         async init() {
-          // 1. Load the initial data
           await this.load();
-          // 2. Derive the campaign list from the data
           this.deriveCampaigns();
 
-          // 3. *** THIS IS THE FIX ***
-          // Listen for ANY changes to the 'prospects' table
-          supabase.channel('public:prospects')
+          // --- FIX 2: USE the NEW client variable name ---
+          supabaseClient.channel('public:prospects')
             .on('postgres_changes', { event: '*', schema: 'public', table: 'prospects' }, (payload) => {
               console.log('Real-time change received!', payload);
               this.handleRealtimeChange(payload);
@@ -59,25 +55,21 @@
             .subscribe();
         },
 
-        // This function handles all live updates
         handleRealtimeChange(payload) {
+          // ...(rest of the function is the same)...
           let campaignListChanged = false;
 
           if (payload.eventType === 'INSERT') {
-            // Add the new row to the top of our list
             this.db.unshift(payload.new);
-            // Check if it's a new campaign
             if (payload.new.campaign && !this.campaigns.includes(payload.new.campaign)) {
               campaignListChanged = true;
             }
           }
 
           if (payload.eventType === 'UPDATE') {
-            // Find the item in our 'db' array and update it
             let item = this.db.find(r => r.id === payload.new.id);
             if (item) {
-              Object.assign(item, payload.new); // Merges changes
-              // Check if it's a new campaign
+              Object.assign(item, payload.new);
               if (payload.new.campaign && !this.campaigns.includes(payload.new.campaign)) {
                 campaignListChanged = true;
               }
@@ -85,30 +77,30 @@
           }
 
           if (payload.eventType === 'DELETE') {
-            // Remove the item from our 'db' array
             this.db = this.db.filter(r => r.id !== payload.old.id);
+             // Also re-derive campaigns in case the deleted item had the last instance of a campaign
+            campaignListChanged = true;
           }
 
           if (campaignListChanged) {
-            this.deriveCampaigns(); // Re-build the campaign dropdown
+            this.deriveCampaigns();
           }
         },
 
-        // Re-builds the campaign list from the 'db' array
         deriveCampaigns() {
           const allCampaigns = this.db
             .map(r => r.campaign)
-            .filter(Boolean); // Remove null/empty
+            .filter(Boolean);
           this.campaigns = [...new Set(allCampaigns)].sort();
         },
 
-        // Loads all data from Supabase
         async load() {
-          const { data, error } = await supabase
+          // --- FIX 3: USE the NEW client variable name ---
+          const { data, error } = await supabaseClient
             .from('prospects')
             .select('*')
-            .order('created_at', { ascending: false }); // Sort by new
-          
+            .order('created_at', { ascending: false });
+
           if (error) {
             alert('Error loading data: ' + error.message);
           } else {
@@ -116,15 +108,14 @@
           }
         },
 
-        // Adds new prospects to Supabase
         async ingest() {
           const campaignToAssign = this.addFormCampaign === 'unassigned' ? '' : this.addFormCampaign;
-          
+
           if (this.addFormCampaign === '') {
             alert('Please select a campaign to assign these prospects to.');
             return;
           }
-          
+
           const lines = (this.pasteInput || '').split('\n').map(l => l.trim()).filter(Boolean);
           if (lines.length === 0) return;
 
@@ -132,29 +123,26 @@
           for (const line of lines) {
             const domain = this.normalizeDomain(line.split(',')[0].trim());
             if (!domain) continue;
-            // Check for duplicates in the *local* db first
             if (this.db.some(r => r.domain === domain)) continue;
 
             newRows.push({
               domain: domain,
               campaign: campaignToAssign,
               status: 'unvetted'
-              // Supabase handles 'id' and 'created_at' automatically
             });
           }
 
-          // Filter duplicates from the batch itself
           const uniqueNewRows = newRows.filter(
             (row, index, self) => index === self.findIndex(r => r.domain === row.domain)
           );
 
           if (uniqueNewRows.length > 0) {
-            const { error } = await supabase.from('prospects').insert(uniqueNewRows);
-            
+             // --- FIX 4: USE the NEW client variable name ---
+            const { error } = await supabaseClient.from('prospects').insert(uniqueNewRows);
+
             if (error) {
               alert('Error creating prospects: ' + error.message);
             } else {
-              // SUCCESS! The real-time listener will update the UI automatically.
               this.pasteInput = '';
               this.ingestSummary = { total: lines.length, newCount: uniqueNewRows.length, dupeCount: lines.length - uniqueNewRows.length, invalidCount: 0 };
               this.showAddForm = false;
@@ -164,11 +152,9 @@
           }
         },
 
-        // Updates a single prospect
         async updateProspect(p) {
-          // This function is now triggered by @change, so 'p' is the local object
-          // We just tell Supabase to update the row with this id
-          const { error } = await supabase
+          // --- FIX 5: USE the NEW client variable name ---
+          const { error } = await supabaseClient
             .from('prospects')
             .update({
               status: p.status,
@@ -176,19 +162,18 @@
               notes: p.notes,
               campaign: p.campaign
             })
-            .eq('id', p.id); // Where id matches p.id
+            .eq('id', p.id);
 
           if (error) {
             alert('Error updating prospect: ' + error.message);
           }
-          // The real-time listener will handle the update
         },
 
-        // Deletes a single prospect
         async deleteProspect(id) {
           if (!confirm('Delete this prospect?')) return;
-          
-          const { error } = await supabase
+
+          // --- FIX 6: USE the NEW client variable name ---
+          const { error } = await supabaseClient
             .from('prospects')
             .delete()
             .eq('id', id);
@@ -196,11 +181,10 @@
           if (error) {
             alert('Error deleting prospect: ' + error.message);
           }
-          // The real-time listener will handle the update
         },
 
-        // --- HELPER FUNCTIONS (Mostly the same) ---
-
+        // --- HELPER FUNCTIONS ---
+        // ...(These are all the same, no changes needed)...
         normalizeDomain(input) {
           let s = (input || '').trim().toLowerCase();
           s = s.replace(/^(https?:\/\/|ftp:\/\/)/, '').replace(/^[^@]+@/, '');
@@ -208,8 +192,6 @@
           if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(s)) return null;
           return s;
         },
-
-        // This just adds to the local list, which is fine
         addNewCampaign() {
             const name = this.newCampaignName.trim();
             if (!name) {
@@ -222,14 +204,12 @@
             }
             this.campaigns.push(name);
             this.campaigns.sort();
-            this.addFormCampaign = name; 
+            this.addFormCampaign = name;
             this.newCampaignName = '';
             this.showNewCampaignInput = false;
         },
-
         get filtered() {
           let rows = this.db.slice();
-
           if (this.selectedCampaign !== 'all') {
             rows = rows.filter(r => r.campaign === this.selectedCampaign || (this.selectedCampaign === '' && !r.campaign));
           }
@@ -248,10 +228,8 @@
               (r.campaign || '').toLowerCase().includes(q)
             );
           }
-          // Sort by the 'created_at' column
           return rows.sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
         },
-
         countByStatus(status) {
           let relevantData = this.db;
           if (this.selectedCampaign !== 'all') {
@@ -259,14 +237,11 @@
           }
           return relevantData.filter(r => r.status === status).length;
         },
-
-        // Formats the 'created_at' column
         formatDate(iso) {
           if (!iso) return '';
           const d = new Date(iso);
           return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         },
-
         exportCSV(all) {
           let rowsToExport;
           if (all) {
@@ -279,14 +254,11 @@
           } else {
               rowsToExport = this.filtered;
           }
-
-          // Update headers for Supabase columns
           const headers = ['id', 'domain', 'status', 'contact', 'notes', 'created_at', 'campaign'];
           const escape = v => `"${String(v || '').replace(/"/g,'""')}"`;
           const csv = [headers.join(',')].concat(
               rowsToExport.map(r => headers.map(h => escape(r[h])).join(','))
           ).join('\n');
-
           const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
           const url = URL.createObjectURL(blob);
           const a = document.createElement('a');
@@ -358,7 +330,7 @@ blog.domain.co.uk"
                   class="w-full border rounded-md p-2 h-32"></textarea>
         <p class="text-xs text-gray-500 mt-1">Cleans to root domains, lowercases, and skips duplicates. Assign a campaign on the right.</p>
       </div>
-      
+
       <div>
         <label class="block text-sm text-gray-700 mb-1 flex justify-between items-center">
           <span>Assign to Campaign</span>
@@ -374,7 +346,7 @@ blog.domain.co.uk"
           </template>
           <option value="unassigned">Unassigned</option>
         </select>
-        
+
         <div x-show="showNewCampaignInput" class="mt-2 flex gap-2" x-transition>
           <input type="text" x-model="newCampaignName" placeholder="New campaign name..."
                  class="flex-grow border rounded-md p-1 text-sm">
@@ -383,14 +355,14 @@ blog.domain.co.uk"
           <button @click="showNewCampaignInput = false; newCampaignName = ''"
                  class="px-2 py-1 text-sm text-gray-600 hover:underline">Cancel</button>
         </div>
-    
+
         <button @click="ingest()"
                 class="mt-4 w-full px-3 py-2 rounded-md text-white bg-gray-900 hover:bg-gray-800">
           Add Prospects
         </button>
       </div>
     </div>
-    
+
     <template x-if="ingestSummary.total > 0">
       <div class="mt-3 text-sm">
         <span class="inline-block mr-3">Total: <strong x-text="ingestSummary.total"></strong></span>
@@ -476,9 +448,7 @@ blog.domain.co.uk"
                         x-model="p.notes"
                         @change="updateProspect(p)"></textarea>
             </td>
-            
             <td class="p-2 text-gray-700" x-text="formatDate(p.created_at)"></td>
-            
             <td class="p-2">
               <select class="border rounded-md p-1"
                       x-model="p.campaign"
