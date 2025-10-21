@@ -1,149 +1,174 @@
 <!DOCTYPE html>
 <html lang="en" class="h-full">
 <head>
-  <meta charset="utf-8" />
-  <title>Media Prospect Manager (MVP)</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta charset="utf-8" />
+  <title>Media Prospect Manager (MVP)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
 
-  <!-- Tailwind CSS -->
-  <script src="https://cdn.tailwindcss.com"></script>
-  <!-- Alpine.js -->
-  <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
 
-  <style>
-    td, th { white-space: nowrap; }
-    td textarea { min-height: 2.25rem; }
-  </style>
+  <style>
+    td, th { white-space: nowrap; }
+    td textarea { min-height: 2.25rem; }
+  </style>
 </head>
 <body class="h-full bg-gray-50 text-gray-900">
 <div class="max-w-7xl mx-auto p-4" x-data="prospectApp()" x-init="init()">
 
-  <div class="flex items-start sm:items-center justify-between gap-4 flex-col sm:flex-row">
-    <div>
-      <h1 class="text-2xl font-semibold">Media Prospect Manager</h1>
-      <p class="text-sm text-gray-600">Shared via Google Sheets API — paste, vet, and track prospects across the team.</p>
-    </div>
-    <div class="flex gap-2">
-      <button @click="exportCSV(false)"
-              class="px-3 py-2 text-sm rounded-md border bg-white hover:bg-gray-50">Export Filtered CSV</button>
-      <button @click="exportCSV(true)"
-              class="px-3 py-2 text-sm rounded-md border bg-white hover:bg-gray-50">Export All CSV</button>
-    </div>
-  </div>
+  <div class="flex items-start sm:items-center justify-between gap-4 flex-col sm:flex-row">
+    <div>
+      <h1 class="text-2xl font-semibold">Media Prospect Manager</h1>
+      <p class="text-sm text-gray-600">Shared via Google Sheets API — paste, vet, and track prospects across the team.</p>
+    </div>
+    <div class="flex gap-2">
+      <button @click="exportCSV(false)"
+              class="px-3 py-2 text-sm rounded-md border bg-white hover:bg-gray-50">Export Filtered CSV</button>
+      <button @click="exportCSV(true)"
+              class="px-3 py-2 text-sm rounded-md border bg-white hover:bg-gray-50">Export All CSV</button>
+    </div>
+  </div>
 
-  <div class="grid grid-cols-2 md:grid-cols-6 gap-3 mt-4">
-    <template x-for="s in statuses" :key="s.value">
-      <div class="rounded-lg border bg-white p-3">
-        <div class="text-xs text-gray-500" x-text="s.label"></div>
-        <div class="text-xl font-semibold" x-text="countByStatus(s.value)"></div>
-      </div>
-    </template>
-  </div>
+  <div class="grid grid-cols-2 md:grid-cols-6 gap-3 mt-4">
+    <template x-for="s in statuses" :key="s.value">
+      <div class="rounded-lg border bg-white p-3">
+        <div class="text-xs text-gray-500" x-text="s.label"></div>
+        <div class="text-xl font-semibold" x-text="countByStatus(s.value)"></div>
+      </div>
+    </template>
+  </div>
 
-  <div class="mt-6 rounded-lg border bg-white p-4">
-    <h2 class="font-medium mb-3">Add Prospects (Paste Only)</h2>
-    <div class="grid md:grid-cols-3 gap-3">
-      <div class="md:col-span-2">
-        <label class="block text-sm text-gray-700 mb-1">Paste list of domains or URLs (one per line)</label>
-        <textarea x-model="pasteInput"
-                  placeholder="example.com
+  <div class="mt-6 rounded-lg border bg-white p-4">
+    <h2 class="font-medium mb-3">Add Prospects (Paste Only)</h2>
+    <div class="grid md:grid-cols-3 gap-3">
+      <div class="md:col-span-2">
+        <label class="block text-sm text-gray-700 mb-1">Paste list of domains or URLs (one per line)</label>
+        <textarea x-model="pasteInput"
+                  placeholder="example.com
 https://www.site.com/about
 blog.domain.co.uk/article"
-                  class="w-full border rounded-md p-2 h-32"></textarea>
-        <p class="text-xs text-gray-500 mt-1">Cleans to root domains, lowercases, and skips duplicates (auto-synced to Sheets).</p>
-      </div>
-      <div class="flex md:block gap-2 md:gap-0">
-        <button @click="ingest()"
-                class="mt-6 md:mt-0 h-10 md:h-auto md:w-full px-3 py-2 rounded-md text-white bg-gray-900 hover:bg-gray-800">Add Prospects</button>
-      </div>
-    </div>
-    <template x-if="ingestSummary.total > 0">
-      <div class="mt-3 text-sm">
-        <span class="inline-block mr-3">Total: <strong x-text="ingestSummary.total"></strong></span>
-        <span class="inline-block mr-3 text-green-700">Added: <strong x-text="ingestSummary.newCount"></strong></span>
-        <span class="inline-block mr-3 text-amber-700">Duplicates: <strong x-text="ingestSummary.dupeCount"></strong></span>
-        <span class="inline-block text-red-700" x-show="ingestSummary.invalidCount > 0">Invalid: <strong x-text="ingestSummary.invalidCount"></strong></span>
-      </div>
-    </template>
-  </div>
+                  class="w-full border rounded-md p-2 h-32"></textarea>
+        <p class="text-xs text-gray-500 mt-1">Cleans to root domains, lowercases, and skips duplicates (auto-synced to Sheets).</p>
+      </div>
+      <div class="flex md:block gap-2 md:gap-0">
+        <button @click="ingest()"
+                class="mt-6 md:mt-0 h-10 md:h-auto md:w-full px-3 py-2 rounded-md text-white bg-gray-900 hover:bg-gray-800">Add Prospects</button>
+      </div>
+    </div>
+    <template x-if="ingestSummary.total > 0">
+      <div class="mt-3 text-sm">
+        <span class="inline-block mr-3">Total: <strong x-text="ingestSummary.total"></strong></span>
+        <span class="inline-block mr-3 text-green-700">Added: <strong x-text="ingestSummary.newCount"></strong></span>
+        <span class="inline-block mr-3 text-amber-700">Duplicates: <strong x-text="ingestSummary.dupeCount"></strong></span>
+        <span class="inline-block text-red-700" x-show="ingestSummary.invalidCount > 0">Invalid: <strong x-text="ingestSummary.invalidCount"></strong></span>
+      </div>
+    </template>
+  </div>
 
-  <div class="mt-6 grid grid-cols-1 md:grid-cols-4 gap-3">
-    <div class="md:col-span-2">
-      <label class="text-sm text-gray-700">Search</label>
-      <input type="search" x-model.debounce.300ms="search"
-             placeholder="Search domain, contact info, or notes..."
-             class="w-full border rounded-md p-2"/>
-    </div>
-    <div>
-      <label class="text-sm text-gray-700">Filter by Status</label>
-      <select x-model="filterStatus" class="w-full border rounded-md p-2">
-        <option value="">All</option>
-        <template x-for="s in statuses" :key="'filter-'+s.value">
-          <option :value="s.value" x-text="s.label"></option>
-        </template>
-      </select>
-    </div>
-    <div class="flex items-end">
-      <label class="inline-flex items-center gap-2">
-        <input type="checkbox" x-model="hideRejected" class="rounded border-gray-300">
-        <span class="text-sm">Hide Rejected</span>
-      </label>
-    </div>
-  </div>
+  <div class="mt-6 grid grid-cols-1 md:grid-cols-4 gap-3">
+    <div class="md:col-span-2">
+      <label class="text-sm text-gray-700">Search</label>
+      <input type="search" x-model.debounce.300ms="search"
+             placeholder="Search domain, contact info, or notes..."
+             class="w-full border rounded-md p-2"/>
+    </div>
+    <div>
+      <label class="text-sm text-gray-700">Filter by Status</label>
+      <select x-model="filterStatus" class="w-full border rounded-md p-2">
+        <option value="">All</option>
+        <template x-for="s in statuses" :key="'filter-'+s.value">
+          <option :value="s.value" x-text="s.label"></option>
+        </template>
+      </select>
+    </div>
+    <div class="flex items-end">
+      <label class="inline-flex items-center gap-2">
+        <input type="checkbox" x-model="hideRejected" class="rounded border-gray-300">
+        <span class="text-sm">Hide Rejected</span>
+      </label>
+    </div>
+  </div>
 
-  <div class="mt-4 overflow-auto rounded-lg border bg-white">
-    <table class="min-w-full text-sm">
-      <thead class="bg-gray-50 text-gray-600">
-        <tr>
-          <th class="p-2 text-left">Domain</th>
-          <th class="p-2 text-left">Status</th>
-          <th class="p-2 text-left">Contact Info</th>
-          <th class="p-2 text-left">Notes</th>
-          <th class="p-2 text-left">Date Added</th>
-          <th class="p-2 text-left">Actions</th>
-        </tr>
-      </thead>
-      <tbody>
-        <template x-if="filtered.length === 0">
-          <tr><td colspan="6" class="p-4 text-center text-gray-500">No prospects match your filters.</td></tr>
-        </template>
-        <template x-for="p in filtered" :key="p.id">
-          <tr class="border-t">
-            <td class="p-2 font-medium" x-text="p.domain"></td>
-            <td class="p-2">
-              <select class="border rounded-md p-1"
-                      x-model="p.status"
-                      @change="updateProspect(p)">
-                <template x-for="s in statuses" :key="s.value">
-                  <option :value="s.value" x-text="s.label"></option>
-                </template>
-              </select>
-            </td>
-            <td class="p-2">
-              <input type="text" class="w-64 max-w-full border rounded-md p-1"
-                     x-model="p.contact"
-                     @change="updateProspect(p)">
-            </td>
-            <td class="p-2">
-              <textarea class="w-80 max-w-full border rounded-md p-1"
-                        x-model="p.notes"
-                        @change="updateProspect(p)"></textarea>
-            </td>
-            <td class="p-2 text-gray-700" x-text="formatDate(p.dateAdded)"></td>
-            <td class="p-2">
-              <button class="text-xs text-red-600 hover:underline" @click="deleteProspect(p.id)">Delete</button>
-            </td>
-          </tr>
-        </template>
-      </tbody>
-    </table>
-  </div>
+  <div class="mt-4 overflow-auto rounded-lg border bg-white">
+    <table class="min-w-full text-sm">
+      <thead class="bg-gray-50 text-gray-600">
+        <tr>
+          <th class="p-2 text-left">Domain</th>
+          <th class="p-2 text-left">Status</th>
+          <th class="p-2 text-left">Contact Info</th>
+          <th class="p-2 text-left">Notes</th>
+          <th class="p-2 text-left">Date Added</th>
+  _       <th class="p-2 text-left">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        <template x-if="filtered.length === 0">
+          <tr><td colspan="6" class="p-4 text-center text-gray-500">No prospects match your filters.</td></tr>
+        </template>
+        <template x-for="p in filtered" :key="p.id">
+          <tr class="border-t">
+            <td class="p-2 font-medium" x-text="p.domain"></td>
+            <td class="p-2">
+              <select class="border rounded-md p-1"
+                      x-model="p.status"
+                      @change="updateProspect(p)">
+                <template x-for="s in statuses" :key="s.value">
+                  <option :value="s.value" x-text="s.label"></option>
+                </template>
+              </select>
+            </td>
+            <td class="p-2">
+New         <input type="text" class="w-64 max-w-full border rounded-md p-1"
+                     x-model="p.contact"
+                     @change="updateProspect(p)">
+            </td>
+      _     <td class="p-2">
+              <textarea class="w-80 max-w-full border rounded-md p-1"
+A                 x-model="p.notes"
+                        @change="updateProspect(p)"></textarea>
+            </td>
+            <td class="p-2 text-gray-700" x-text="formatDate(p.dateAdded)"></td>
+            <td class="p-2">
+              <button class="text-xs text-red-600 hover:underline" @click="deleteProspect(p.id)">Delete</button>
+            </td>
+          </tr>
+        </template>
+      </tbody>
+    </table>
+  </div>
 
 </div>
 
 <script>
 function prospectApp() {
-  const API_URL = "https://script.google.com/macros/s/AKfycbwI5Eew3KMuJIvqCWq0TZYK3gZM1WS4zyczZjLjtqFvuK_2s2M6NdRXB_yDia42Ns5T/exec";
+  // This helper function wraps google.script.run in a modern Promise
+  // This is the correct way to call your Code.gs functions
+  const server = {
+    loadData: () => new Promise((resolve, reject) => {
+      google.script.run
+        .withSuccessHandler(resolve)
+        .withFailureHandler(reject)
+        .loadData();
+    }),
+    createProspect: (prospect) => new Promise((resolve, reject) => {
+      google.script.run
+        .withSuccessHandler(resolve)
+        .withFailureHandler(reject)
+        .createProspect(prospect);
+    }),
+    updateProspect: (prospect) => new Promise((resolve, reject) => {
+      google.script.run
+        .withSuccessHandler(resolve)
+        .withFailureHandler(reject)
+        .updateProspect(prospect);
+    }),
+    deleteProspectById: (id) => new Promise((resolve, reject) => {
+      google.script.run
+        .withSuccessHandler(resolve)
+        .withFailureHandler(reject)
+        .deleteProspectById(id);
+    }),
+  };
 
   return {
     db: [],
@@ -166,9 +191,13 @@ function prospectApp() {
     },
 
     async load() {
-      const res = await fetch(API_URL);
-      const json = await res.json();
-      this.db = json.data || [];
+      // --- Use google.script.run wrapper ---
+      const json = await server.loadData();
+      if (json.data) {
+        this.db = json.data;
+      } else if (json.error) {
+        alert('Error loading data: ' + json.error);
+      }
     },
 
     async ingest() {
@@ -190,14 +219,14 @@ function prospectApp() {
           dateAdded: new Date().toISOString()
         };
 
-        await fetch(API_URL, {
-          method: 'POST',
-          body: JSON.stringify(newProspect),
-          headers: { 'Content-Type': 'application/json' }
-        });
-
-        this.db.push(newProspect);
-        newCount++;
+        // --- Use google.script.run wrapper ---
+        const result = await server.createProspect(newProspect);
+        if (result.success) {
+          this.db.push(newProspect);
+          newCount++;
+        } else if (result.error) {
+          alert('Error creating prospect: ' + result.error);
+        }
       }
 
       this.pasteInput = '';
@@ -226,20 +255,16 @@ function prospectApp() {
     },
 
     async updateProspect(p) {
-      await fetch(API_URL, {
-        method: 'PUT',
-        body: JSON.stringify(p),
-        headers: { 'Content-Type': 'application/json' }
-      });
+      // --- Use google.script.run wrapper ---
+      await server.updateProspect(p);
     },
 
     async deleteProspect(id) {
       if (!confirm('Delete this prospect?')) return;
-      await fetch(API_URL, {
-        method: 'DELETE',
-        body: JSON.stringify({ id }),
-        headers: { 'Content-Type': 'application/json' }
-      });
+      
+      // --- Use google.script.run wrapper ---
+      await server.deleteProspectById(id);
+      
       this.db = this.db.filter(r => r.id !== id);
     },
 
