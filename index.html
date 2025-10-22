@@ -5,25 +5,21 @@
   <title>Media Prospect Manager</title>
   <base target="_top">
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="Manage and track media outreach prospects with a real-time Supabase database.">
 
-  <script src="https://cdn.tailwindcss.com"></script>
-  
-  <script src="https://cdn.jsdelivr.net/npm/@supabase-js@2.43.4/dist/umd/supabase.min.js"></script>
-
+  <script defer src="https://cdn.tailwindcss.com"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/@supabase-js@2.43.4/dist/umd/supabase.min.js"></script>
   <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
-  
-  <script>
+
+  <script defer>
     document.addEventListener('alpine:init', () => {
-      // --- Supabase Client Setup (Now guaranteed 'supabase' exists) ---
-      const { createClient } = supabase; 
+      const { createClient } = supabase;
       const supabaseClient = createClient(
-        'https://mfjymrrykhvfkivtvgit.supabase.co', // <<< YOUR URL
-        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1manltcnJ5a2h2ZmtpdnR2Z2l0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjEwNzY1MzksImV4cCI6MjA3NjY1MjUzOX0.wgn7fZgL8vmedKWmJ8BNfwbaOzZ4ZFltqcDrkEDvsnw' // <<< YOUR KEY
+        'https://mfjymrrykhvfkivtvgit.supabase.co',
+        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1manltcnJ5a2h2ZmtpdnR2Z2l0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjEwNzY1MzksImV4cCI6MjA3NjY1MjUzOX0.wgn7fZgL8vmedKWmJ8BNfwbaOzZ4ZFltqcDrkEDvsnw'
       );
 
-      // --- Define Alpine Data INSIDE the listener ---
       Alpine.data('prospectApp', () => ({
-        // All your original properties: db, pasteInput, etc.
         db: [],
         pasteInput: '',
         ingestSummary: { total: 0, newCount: 0, dupeCount: 0, invalidCount: 0 },
@@ -44,274 +40,204 @@
           { value: 'done', label: 'Done' }
         ],
 
-        // Your original init function
         async init() {
           await this.load();
           this.deriveCampaigns();
-
-          console.log("Subscribing to 'test-channel'...");
-          supabaseClient.channel('test-channel').subscribe((status) => {
-            console.log("TEST CHANNEL STATUS:", status);
-          });
-
+          supabaseClient.channel('test-channel').subscribe();
           this.initSubscription();
         },
 
-        // --- All your other methods (initSubscription, handleRealtimeChange, load, etc.) ---
-        // Make sure they use the 'supabaseClient' defined above
-        
         initSubscription() {
           supabaseClient.removeAllChannels();
-          console.log("Attempting to subscribe to real-time updates...");
           supabaseClient.channel('public:mediadb')
-            .on(
-              'postgres_changes',
-              { event: '*', schema: 'public', table: 'mediadb' },
-              (payload) => {
-                try {
-                  console.log('Real-time change received!', payload);
-                  this.handleRealtimeChange(payload);
-                } catch (error) {
-                  console.error("Error processing real-time event:", error, payload);
-                }
-              }
-            )
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'mediadb' }, (payload) => {
+              this.handleRealtimeChange(payload);
+            })
             .subscribe((status, err) => {
               if (status === 'SUBSCRIBED') {
-                console.log('✅ Successfully subscribed to real-time updates!');
+                console.log('Subscribed to realtime updates');
               } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
-                console.error(`❌ Realtime connection ${status}:`, err || '');
-                console.log('Attempting to re-subscribe in 5 seconds...');
+                console.error('Realtime connection error:', status, err);
                 setTimeout(() => this.initSubscription(), 5000);
-              } else {
-                console.warn('Realtime subscription status:', status);
               }
             });
         },
-        
+
         handleRealtimeChange(payload) {
-             // ... (Your existing logic) ...
-             // Make sure this logic uses 'this.db' correctly
-            try {
-                let campaignListChanged = false;
-
-                if (payload.eventType === 'INSERT') {
-                  if (!this.db.some(item => item.id === payload.new.id)) {
-                    this.db = [payload.new, ...this.db];
-                    if (payload.new.campaign && !this.campaigns.includes(payload.new.campaign)) {
-                      campaignListChanged = true;
-                    }
-                  } else {
-                      console.warn("Realtime: Received INSERT for existing ID, skipping:", payload.new.id);
-                  }
-                }
-                else if (payload.eventType === 'UPDATE') {
-                  const index = this.db.findIndex(r => r.id === payload.new.id);
-                  if (index !== -1) {
-                      this.db = [
-                          ...this.db.slice(0, index),
-                          payload.new,
-                          ...this.db.slice(index + 1)
-                      ];
-                    if (payload.new.campaign && !this.campaigns.includes(payload.new.campaign)) {
-                      campaignListChanged = true;
-                    }
-                  } else {
-                      console.warn("Realtime: Received UPDATE for non-existent ID, adding:", payload.new.id);
-                      if (!this.db.some(item => item.id === payload.new.id)) {
-                          this.db = [payload.new, ...this.db]; 
-                      }
-                  }
-                }
-                else if (payload.eventType === 'DELETE') {
-                  const initialLength = this.db.length;
-                  this.db = this.db.filter(r => r.id !== payload.old.id);
-                  if(this.db.length < initialLength){
-                      campaignListChanged = true;
-                  }
-                }
-                if (campaignListChanged) {
-                  this.deriveCampaigns();
-                }
-            } catch (error) {
-                  console.error("Error inside handleRealtimeChange logic:", error, payload);
-            }
-        },
-        
-        deriveCampaigns() {
-             // ... (Your existing logic) ...
-            const allCampaigns = this.db
-                .map(r => r.campaign)
-                .filter(Boolean);
-            this.campaigns = [...new Set(allCampaigns)].sort();
-        },
-        
-        async load() {
-             // ... (Your existing logic using supabaseClient) ...
-            console.log("Loading initial data...");
-            // Use the supabaseClient defined within the event listener scope
-            const { data, error } = await supabaseClient
-                .from('mediadb')
-                .select('*')
-                .order('created_at', { ascending: false });
-
-            if (error) {
-                console.error('Error loading data:', error);
-                alert('Error loading data: ' + error.message);
-            } else {
-                console.log("Data loaded successfully.");
-                this.db = data;
-            }
-        },
-        
-        async ingest() {
-            // ... (Your existing logic using supabaseClient) ...
-            const campaignToAssign = this.addFormCampaign === 'unassigned' ? '' : this.addFormCampaign;
-              if (this.addFormCampaign === '') {
-                alert('Please select a campaign to assign these prospects to.');
-                return;
+          try {
+            let campaignListChanged = false;
+            if (payload.eventType === 'INSERT') {
+              if (!this.db.some(item => item.id === payload.new.id)) {
+                this.db = [payload.new, ...this.db];
+                if (payload.new.campaign && !this.campaigns.includes(payload.new.campaign)) campaignListChanged = true;
               }
-              const lines = (this.pasteInput || '').split('\n').map(l => l.trim()).filter(Boolean);
-              if (lines.length === 0) return;
-
-              console.log(`Attempting to ingest ${lines.length} lines...`);
-              let newRows = [];
-              let currentDomains = new Set(this.db.map(r => r.domain)); // Cache existing domains
-
-              for (const line of lines) {
-                const domain = this.normalizeDomain(line.split(',')[0].trim());
-                if (!domain) continue;
-                if (currentDomains.has(domain)) continue; 
-                if (newRows.some(r => r.domain === domain)) continue;
-
-                newRows.push({
-                  domain: domain,
-                  campaign: campaignToAssign,
-                  status: 'unvetted'
-                });
-              }
-
-              const uniqueNewRows = newRows; 
-              const dupeCount = lines.length - uniqueNewRows.length;
-              const invalidCount = 0; 
-
-              if (uniqueNewRows.length > 0) {
-                  console.log(`Inserting ${uniqueNewRows.length} unique new rows...`);
-                const { error } = await supabaseClient.from('mediadb').insert(uniqueNewRows);
-
-                if (error) {
-                  console.error('Error creating prospects:', error);
-                  alert('Error creating prospects: ' + error.message);
-                } else {
-                  console.log("Prospects inserted successfully. Realtime should update UI.");
-                  this.pasteInput = '';
-                  this.ingestSummary = { total: lines.length, newCount: uniqueNewRows.length, dupeCount: dupeCount, invalidCount: invalidCount };
-                  this.showAddForm = false;
-                }
+            } else if (payload.eventType === 'UPDATE') {
+              const index = this.db.findIndex(r => r.id === payload.new.id);
+              if (index !== -1) {
+                this.db = [...this.db.slice(0, index), payload.new, ...this.db.slice(index + 1)];
+                if (payload.new.campaign && !this.campaigns.includes(payload.new.campaign)) campaignListChanged = true;
               } else {
-                  console.log("No unique new rows to insert.");
-                  this.ingestSummary = { total: lines.length, newCount: 0, dupeCount: dupeCount, invalidCount: invalidCount };
+                this.db = [payload.new, ...this.db];
               }
+            } else if (payload.eventType === 'DELETE') {
+              this.db = this.db.filter(r => r.id !== payload.old.id);
+              campaignListChanged = true;
+            }
+            if (campaignListChanged) this.deriveCampaigns();
+          } catch (error) {
+            console.error("Error inside handleRealtimeChange:", error, payload);
+          }
+        },
+
+        deriveCampaigns() {
+          const allCampaigns = this.db.map(r => r.campaign).filter(Boolean);
+          this.campaigns = [...new Set(allCampaigns)].sort();
+        },
+
+        async load() {
+          const { data, error } = await supabaseClient
+            .from('mediadb')
+            .select('*')
+            .order('created_at', { ascending: false });
+          if (error) {
+            console.error('Error loading data:', error);
+            alert('Error loading data: ' + error.message);
+          } else {
+            this.db = data;
+          }
+        },
+
+        async ingest() {
+          const campaignToAssign = this.addFormCampaign === 'unassigned' ? '' : this.addFormCampaign;
+          if (this.addFormCampaign === '') {
+            alert('Please select a campaign.');
+            return;
+          }
+          const lines = (this.pasteInput || '').split('\n').map(l => l.trim()).filter(Boolean);
+          if (lines.length === 0) return;
+
+          let newRows = [];
+          let currentDomains = new Set(this.db.map(r => r.domain));
+          for (const line of lines) {
+            const domain = this.normalizeDomain(line.split(',')[0].trim());
+            if (!domain) continue;
+            if (currentDomains.has(domain)) continue;
+            if (newRows.some(r => r.domain === domain)) continue;
+            newRows.push({ domain, campaign: campaignToAssign, status: 'unvetted' });
+          }
+
+          const dupeCount = lines.length - newRows.length;
+          if (newRows.length > 0) {
+            const { error } = await supabaseClient.from('mediadb').insert(newRows);
+            if (error) {
+              console.error('Error creating prospects:', error);
+              alert('Error creating prospects: ' + error.message);
+            } else {
+              this.pasteInput = '';
+              this.ingestSummary = { total: lines.length, newCount: newRows.length, dupeCount, invalidCount: 0 };
+              this.showAddForm = false;
+            }
+          } else {
+            this.ingestSummary = { total: lines.length, newCount: 0, dupeCount, invalidCount: 0 };
+          }
         },
 
         async updateProspect(p) {
-            // ... (Your existing logic using supabaseClient) ...
-            console.log(`Attempting to update prospect ID: ${p.id}`);
-              const { error } = await supabaseClient
-                .from('mediadb')
-                .update({
-                  status: p.status,
-                  contact: p.contact,
-                  notes: p.notes,
-                  campaign: p.campaign
-                })
-                .eq('id', p.id);
-
-              if (error) {
-                  console.error('Error updating prospect:', error);
-                  alert('Error updating prospect: ' + error.message);
-              } else {
-                  console.log("Prospect updated successfully. Realtime should update UI.");
-              }
+          const { error } = await supabaseClient
+            .from('mediadb')
+            .update({ status: p.status, contact: p.contact, notes: p.notes, campaign: p.campaign })
+            .eq('id', p.id);
+          if (error) {
+            console.error('Error updating prospect:', error);
+            alert('Error updating prospect: ' + error.message);
+          }
         },
 
         async deleteProspect(id) {
-            // ... (Your existing logic using supabaseClient) ...
-            if (!confirm('Delete this prospect?')) return;
-              console.log(`Attempting to delete prospect ID: ${id}`);
-              const { error } = await supabaseClient
-                .from('mediadb')
-                .delete()
-                .eq('id', id);
-
-              if (error) {
-                  console.error('Error deleting prospect:', error);
-                  alert('Error deleting prospect: ' + error.message);
-              } else {
-                  console.log("Prospect deleted successfully. Realtime should update UI.");
-              }
+          if (!confirm('Delete this prospect?')) return;
+          const { error } = await supabaseClient.from('mediadb').delete().eq('id', id);
+          if (error) {
+            console.error('Error deleting prospect:', error);
+            alert('Error deleting prospect: ' + error.message);
+          }
         },
 
-        // --- HELPER FUNCTIONS ---
-         normalizeDomain(input) {
-             // ... (Your existing logic) ...
-            let s = (input || '').trim().toLowerCase();
-              s = s.replace(/^(https?:\/\/|ftp:\/\/)/, '').replace(/^[^@]+@/, '');
-              s = s.split(/[/?#]/)[0].split(':')[0].replace(/^www\./, '').replace(/\.$/, '');
-              if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(s)) return null;
-              return s;
+        normalizeDomain(input) {
+          let s = (input || '').trim().toLowerCase();
+          s = s.replace(/^(https?:\/\/|ftp:\/\/)/, '').replace(/^[^@]+@/, '');
+          s = s.split(/[/?#]/)[0].split(':')[0].replace(/^www\./, '').replace(/\.$/, '');
+          if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(s)) return null;
+          return s;
         },
+
         addNewCampaign() {
-             // ... (Your existing logic) ...
-            const name = this.newCampaignName.trim();
-                if (!name) { alert('Please enter a campaign name.'); return; }
-                if (this.campaigns.some(c => c.toLowerCase() === name.toLowerCase())) { alert('Campaign already exists.'); return; }
-                this.campaigns.push(name); this.campaigns.sort();
-                this.addFormCampaign = name; this.newCampaignName = '';
-                this.showNewCampaignInput = false;
+          const name = this.newCampaignName.trim();
+          if (!name) { alert('Please enter a campaign name.'); return; }
+          if (this.campaigns.some(c => c.toLowerCase() === name.toLowerCase())) { alert('Campaign already exists.'); return; }
+          this.campaigns.push(name);
+          this.campaigns.sort();
+          this.addFormCampaign = name;
+          this.newCampaignName = '';
+          this.showNewCampaignInput = false;
         },
-        get filtered() {
-             // ... (Your existing logic) ...
-            let rows = this.db; 
-              if (this.selectedCampaign !== 'all') { rows = rows.filter(r => r.campaign === this.selectedCampaign || (this.selectedCampaign === '' && !r.campaign)); }
-              if (this.filterStatus) { rows = rows.filter(r => r.status === this.filterStatus); }
-              if (this.hideRejected) { rows = rows.filter(r => r.status !== 'rejected'); }
-              const q = this.search.trim().toLowerCase();
-              if (q) { rows = rows.filter(r => r.domain.includes(q) || (r.contact || '').toLowerCase().includes(q) || (r.notes || '').toLowerCase().includes(q) || (r.campaign || '').toLowerCase().includes(q)); }
-              
-              return [...rows].sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
-        },
-        countByStatus(status) {
-             // ... (Your existing logic) ...
-            let relevantData = this.db;
-              if (this.selectedCampaign !== 'all') { relevantData = this.db.filter(r => r.campaign === this.selectedCampaign || (this.selectedCampaign === '' && !r.campaign)); }
-              return relevantData.filter(r => r.status === status).length;
-        },
-        formatDate(iso) {
-             // ... (Your existing logic) ...
-            if (!iso) return '';
-              const d = new Date(iso);
-              return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-        },
-        exportCSV(all) {
-            // ... (Your existing logic) ...
-            let rowsToExport;
-              if (all) {
-                  if (this.selectedCampaign !== 'all') { rowsToExport = this.db.filter(r => r.campaign === this.selectedCampaign || (this.selectedCampaign === '' && !r.campaign)); }
-                  else { rowsToExport = this.db.slice(); } 
-                  rowsToExport.sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
-              } else { rowsToExport = this.filtered; } 
-              const headers = ['id', 'domain', 'status', 'contact', 'notes', 'created_at', 'campaign'];
-              const escape = v => `"${String(v || '').replace(/"/g,'""')}"`;
-              const csv = [headers.join(',')].concat(rowsToExport.map(r => headers.map(h => escape(r[h])).join(','))).join('\n');
-              const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' }); const url = URL.createObjectURL(blob);
-              const a = document.createElement('a'); a.href = url;
-              let campaignName = 'all_campaigns';
-              if (this.selectedCampaign === '') { campaignName = 'unassigned'; }
-              else if (this.selectedCampaign !== 'all') { campaignName = this.selectedCampaign.replace(/[^a-z0-9]/gi, '_').toLowerCase(); }
-              a.download = `prospects_${campaignName}_${all?'all':'filtered'}_${new Date().toISOString().replace(/[:.]/g,'-')}.csv`; a.click(); URL.revokeObjectURL(url);
-        }
 
+        get filtered() {
+          let rows = this.db;
+          if (this.selectedCampaign !== 'all') {
+            rows = rows.filter(r => r.campaign === this.selectedCampaign || (this.selectedCampaign === '' && !r.campaign));
+          }
+          if (this.filterStatus) rows = rows.filter(r => r.status === this.filterStatus);
+          if (this.hideRejected) rows = rows.filter(r => r.status !== 'rejected');
+          const q = this.search.trim().toLowerCase();
+          if (q) {
+            rows = rows.filter(r =>
+              r.domain.includes(q) ||
+              (r.contact || '').toLowerCase().includes(q) ||
+              (r.notes || '').toLowerCase().includes(q) ||
+              (r.campaign || '').toLowerCase().includes(q)
+            );
+          }
+          return [...rows].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+        },
+
+        countByStatus(status) {
+          let relevantData = this.db;
+          if (this.selectedCampaign !== 'all') {
+            relevantData = this.db.filter(r => r.campaign === this.selectedCampaign || (this.selectedCampaign === '' && !r.campaign));
+          }
+          return relevantData.filter(r => r.status === status).length;
+        },
+
+        formatDate(iso) {
+          if (!iso) return '';
+          const d = new Date(iso);
+          return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        },
+
+        exportCSV(all) {
+          let rowsToExport;
+          if (all) {
+            rowsToExport = this.selectedCampaign !== 'all'
+              ? this.db.filter(r => r.campaign === this.selectedCampaign || (this.selectedCampaign === '' && !r.campaign))
+              : this.db.slice();
+            rowsToExport.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+          } else {
+            rowsToExport = this.filtered;
+          }
+          const headers = ['id', 'domain', 'status', 'contact', 'notes', 'created_at', 'campaign'];
+          const escape = v => `"${String(v || '').replace(/"/g, '""')}"`;
+          const csv = [headers.join(',')].concat(rowsToExport.map(r => headers.map(h => escape(r[h])).join(','))).join('\n');
+          const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          let campaignName = 'all_campaigns';
+          if (this.selectedCampaign === '') campaignName = 'unassigned';
+          else if (this.selectedCampaign !== 'all') campaignName = this.selectedCampaign.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+          a.download = `prospects_${campaignName}_${all ? 'all' : 'filtered'}_${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
+          a.click();
+          URL.revokeObjectURL(url);
+        }
       }));
     });
   </script>
@@ -323,9 +249,6 @@
 </head>
 
 <body class="h-full bg-gray-50 text-gray-900">
-  <div class="max-w-7xl mx-auto p-4" x-data="prospectApp()" x-init="init()">
-    
-    </div>
-
-  </body>
+  <div class="max-w-7xl mx-auto p-4" x-data="prospectApp()" x-init="init()"></div>
+</body>
 </html>
