@@ -49,8 +49,9 @@
         selectedCampaign: 'all',
         filterStatus: '',
         hideRejected: false,
+        initialized: false, // Track initialization status
 
-        // --- Alpine Initialization Method ---
+        // --- Alpine Initialization Method (with delay fix) ---
         async init() {
           console.log("Alpine init() called.");
           
@@ -67,11 +68,11 @@
             return;
           }
           
-          // Load initial data
+          // 1. Load data and derive campaigns synchronously
           await this.load();
           this.deriveCampaigns();
           
-          // *** FIX: Introduce a small delay to prevent Realtime race condition ***
+          // 2. FIX: Introduce a small delay to prevent Realtime race condition on initial load
           console.log("Scheduling Realtime subscription with 10ms delay to prevent race condition.");
           setTimeout(() => {
             this.initSubscription();
@@ -106,8 +107,13 @@
         initSubscription() {
           console.log('initSubscription() called.');
           if (!supabaseClient) { console.error("Subscribe failed: supabaseClient missing"); return; }
-          supabaseClient.removeAllChannels();
+          
+            // Ensures a clean slate before subscribing
+          supabaseClient.removeAllChannels(); 
+          
           console.log("Attempting to subscribe to real-time updates...");
+          
+            // Creates a new channel instance for a clean connection attempt
           const channel = supabaseClient.channel('public:mediadb');
 
           channel.on(
@@ -126,6 +132,10 @@
               console.log('✅ Successfully subscribed to real-time updates!');
             } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
               console.error(`❌ Realtime connection ${status}:`, err || 'No error details provided.');
+              
+              // FIX: Explicitly unsubscribe to clean up the failed channel resource
+              channel.unsubscribe();
+              
               console.log('🔄 Attempting to re-subscribe in 5 seconds...');
               setTimeout(() => this.initSubscription(), 5000);
             } else {
