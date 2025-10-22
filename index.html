@@ -5,7 +5,7 @@
     <title>Media Prospect Manager</title>
     <base target="_top">
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="description" content="Manage and track media outreach prospects with a real-time Supabase database.">
+    <meta name="description" content="Manage and track media outreach prospects with a Supabase database.">
 
     <script defer src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.43.4/dist/umd/supabase.min.js"></script>
@@ -49,15 +49,14 @@
                 selectedCampaign: 'all',
                 filterStatus: '',
                 hideRejected: false,
-                initialized: false, // Track initialization status
+                initialized: false, 
                 realtimeChannel: null,
                 isRealtimeEnabled: false, // <--- NEW: Explicitly disable Realtime behavior
 
-                // --- Alpine Initialization Method (with delay fix) ---
+                // --- Alpine Initialization Method ---
                 async init() {
                     console.log("Alpine init() called.");
                     
-                    // Safety check against multiple calls
                     if (this.initialized) {
                         console.warn("Init called multiple times. Skipping initialization.");
                         return;
@@ -72,10 +71,9 @@
                     
                     // 1. Load data and derive campaigns synchronously
                     await this.load();
-                    this.deriveCampaigns();
                     
-                    // 2. FIX: Introduce a small delay to prevent Realtime race condition on initial load
-                    console.log("Scheduling Realtime subscription with 10ms delay...");
+                    // 2. Schedule subscription check (which will be skipped if disabled)
+                    console.log("Scheduling subscription check (will skip if disabled)...");
                     setTimeout(() => {
                         this.initSubscription();
                     }, 10);
@@ -116,20 +114,15 @@
                         return;
                     }
                     
-                    // Original Realtime logic (now only runs if isRealtimeEnabled is true)
                     if (this.realtimeChannel) {
                         console.warn("Realtime subscription already attempted. Skipping retry.");
                         return;
                     }
                     
-                    // Ensures a clean slate before subscribing
                     supabaseClient.removeAllChannels(); 
-                    
                     console.log("Attempting to subscribe to real-time updates (one time attempt)...");
-                    
-                    // Creates a new channel instance for a clean connection attempt
                     const channel = supabaseClient.channel('public:mediadb');
-                    this.realtimeChannel = channel; // <--- SET: Mark the connection as attempted
+                    this.realtimeChannel = channel; 
 
                     channel.on(
                         'postgres_changes',
@@ -147,12 +140,8 @@
                             console.log('✅ Successfully subscribed to real-time updates!');
                         } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
                             console.error(`❌ Realtime connection ${status}:`, err || 'No error details provided.');
-                            
-                            // FIX: Explicitly unsubscribe to clean up the failed channel resource
                             channel.unsubscribe();
-                            this.realtimeChannel = null; // Clear channel reference on failure
-
-                            // <--- REMOVED: No more auto-reconnect via setTimeout(this.initSubscription, 5000);
+                            this.realtimeChannel = null; 
                             console.log('🛑 Realtime connection failed or timed out. Automatic retry is disabled.');
                         } else {
                             console.info('ℹ️ Realtime subscription status:', status);
@@ -161,6 +150,8 @@
                 },
 
                 handleRealtimeChange(payload) {
+                    // This function is no longer called for the active user's changes,
+                    // but is kept for compatibility if isRealtimeEnabled is true.
                     try {
                         let campaignListChanged = false;
                         const eventType = payload.eventType;
@@ -171,24 +162,20 @@
 
                         if (eventType === 'INSERT') {
                             if (!this.db.some(item => item.id === newData.id)) {
-                                // Prepend new data to maintain "created_at descending" sort order
                                 this.db = [newData, ...this.db];
                                 if (newData.campaign && !this.campaigns.includes(newData.campaign)) campaignListChanged = true;
                             }
                         } else if (eventType === 'UPDATE') {
                             const index = this.db.findIndex(r => r.id === newData.id);
                             if (index !== -1) {
-                                // Use map for proper reactivity when updating an item
                                 this.db = this.db.map(item => item.id === newData.id ? newData : item);
                                 if (oldData.campaign !== newData.campaign || (newData.campaign && !this.campaigns.includes(newData.campaign))) campaignListChanged = true;
                             } else {
-                                // If update is for a row not in memory (e.g. initial load missed it), insert it.
                                 this.db = [newData, ...this.db];
                             }
                         } else if (eventType === 'DELETE') {
                             const initialLength = this.db.length;
                             this.db = this.db.filter(r => r.id !== oldData.id);
-                            // Check if the campaign list might need recalculating if a campaign's last item was deleted
                             if (this.db.length < initialLength) campaignListChanged = true;
                         }
 
@@ -236,7 +223,6 @@
                             skippedDupes++;
                             continue;
                         }
-
                         newRows.push({ domain, campaign: campaignToAssign, status: 'unvetted' });
                     }
 
@@ -246,7 +232,7 @@
                     this.ingestSummary = { total: lines.length, newCount, dupeCount, invalidCount };
 
                     if (newCount > 0) {
-                        // CHANGE: Use .insert().select() to get full row data immediately
+                        // PROACTIVE SYNC: Insert and immediately select the new rows
                         const { data, error } = await supabaseClient
                             .from('mediadb')
                             .insert(newRows)
@@ -256,7 +242,7 @@
                             console.error('Error creating prospects:', error.message);
                             alert('Error creating prospects. Check console.');
                         } else {
-                            // PROACTIVE SYNC: Manually update local state and re-sort
+                            // PROACTIVE SYNC: Manually update local state
                             if (data && data.length > 0) {
                                 this.db = [...data, ...this.db].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
                                 this.deriveCampaigns();
@@ -271,6 +257,8 @@
                 },
 
                 async updateProspect(p) {
+                    // PROACTIVE SYNC: Local data is already updated by x-model.lazy
+                    // We just need to send the update to Supabase.
                     const updatePayload = {
                         status: p.status,
                         contact: p.contact,
@@ -286,9 +274,8 @@
                     if (error) {
                         alert('Error updating prospect. Check console.');
                     } else {
-                        // PROACTIVE SYNC: Ensure campaigns are recalculated if the campaign field changed.
+                        // Recalculate campaigns in case one was changed
                         this.deriveCampaigns();
-                        // Local data is already updated due to Alpine's x-model binding.
                         console.log(`Prospect ID ${p.id} updated successfully (client-side sync).`);
                     }
                 },
@@ -303,7 +290,7 @@
                     } else {
                         // PROACTIVE SYNC: Manually remove the item from the local array
                         this.db = this.db.filter(r => r.id !== id);
-                        this.deriveCampaigns(); // Recalculate campaigns if the deleted row was the last of its campaign
+                        this.deriveCampaigns(); // Recalculate campaigns
                         console.log(`Prospect with ID ${id} deleted successfully (client-side sync).`);
                     }
                 },
@@ -350,8 +337,6 @@
                             (r.campaign?.toLowerCase() || '').includes(q)
                         );
                     }
-                    // NOTE: Data is already sorted by created_at descending from initial load/realtime,
-                    // so no need to re-sort unless filtering changes the order preference.
                     return rows;
                 },
 
@@ -388,7 +373,6 @@
                         rowsToExport = this.selectedCampaign !== 'all'
                             ? this.db.filter(r => this.selectedCampaign === '' ? !r.campaign : r.campaign === this.selectedCampaign)
                             : this.db.slice();
-                        // Ensure all rows are sorted consistently for "Export All"
                         rowsToExport.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)); 
                     } else {
                         rowsToExport = this.filtered;
@@ -438,7 +422,7 @@
             </div>
             <div class="flex gap-2">
                 <button @click="exportCSV(false)" class="px-3 py-2 text-sm rounded-md border bg-white hover:bg-gray-50">Export Filtered CSV</button>
-                <button @click="exportCSV(true)" class="px-3 py-2 text-sm rounded-md border bg-white hover:bg-gray-50">Export All CSV</button>
+                <button @click="exportCSV(true)" class="px-3 py-2 text-sm rounded-md border bg-white hover:bg-Ggray-50">Export All CSV</button>
             </div>
         </div>
 
@@ -566,7 +550,7 @@
                         <tr class="border-t hover:bg-gray-50">
                             <td class="p-2 font-medium"><a :href="'http://' + p.domain" target="_blank" x-text="p.domain" class="text-blue-600 hover:underline"></a></td>
                             <td class="p-2">
-                                <select class="border rounded-md p-1 text-xs" x-model="p.status" @change="updateProspect(p)">
+                                <select class="border rounded-md p-1 text-xs" x-model.lazy="p.status" @change="updateProspect(p)">
                                     <template x-for="s in statuses" :key="s.value">
                                         <option :value="s.value" x-text="s.label"></option>
                                     </template>
@@ -576,7 +560,7 @@
                             <td class="p-2"><textarea class="w-64 max-w-full border rounded-md p-1 text-xs" x-model.lazy="p.notes" @change="updateProspect(p)"></textarea></td>
                             <td class="p-2 text-gray-600 text-xs" x-text="formatDate(p.created_at)"></td>
                             <td class="p-2">
-                                <select class="border rounded-md p-1 text-xs" x-model="p.campaign" @change="updateProspect(p)">
+                                <select class="border rounded-md p-1 text-xs" x-model.lazy="p.campaign" @change="updateProspect(p)">
                                     <option value="">Unassigned</option>
                                     <template x-for="cName in campaigns" :key="cName">
                                         <option :value="cName" x-text="cName"></option>
