@@ -7,18 +7,23 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <script src="https://cdn.tailwindcss.com"></script>
+  
+  <script src="https://cdn.jsdelivr.net/npm/@supabase-js@2.43.4/dist/umd/supabase.min.js"></script>
+
   <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@supabase-js@2.43.4/dist/umd/supabase.min.js"></script>  <script>
-    // --- PASTE YOUR KEYS HERE ---
-    const SUPABASE_URL = 'https://mfjymrrykhvfkivtvgit.supabase.co'; // <<< YOUR URL
-    const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1manltcnJ5a2h2ZmtpdnR2Z2l0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjEwNzY1MzksImV4cCI6MjA3NjY1MjUzOX0.wgn7fZgL8vmedKWmJ8BNfwbaOzZ4ZFltqcDrkEDvsnw'; // <<< YOUR KEY
+  
+  <script>
+    document.addEventListener('alpine:init', () => {
+      // --- Supabase Client Setup (Now guaranteed 'supabase' exists) ---
+      const { createClient } = supabase; 
+      const supabaseClient = createClient(
+        'https://mfjymrrykhvfkivtvgit.supabase.co', // <<< YOUR URL
+        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1manltcnJ5a2h2ZmtpdnR2Z2l0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjEwNzY1MzksImV4cCI6MjA3NjY1MjUzOX0.wgn7fZgL8vmedKWmJ8BNfwbaOzZ4ZFltqcDrkEDvsnw' // <<< YOUR KEY
+      );
 
-    // Initialize the Supabase client
-    const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-
-
-    function prospectApp() {
-      return {
+      // --- Define Alpine Data INSIDE the listener ---
+      Alpine.data('prospectApp', () => ({
+        // All your original properties: db, pasteInput, etc.
         db: [],
         pasteInput: '',
         ingestSummary: { total: 0, newCount: 0, dupeCount: 0, invalidCount: 0 },
@@ -39,277 +44,276 @@
           { value: 'done', label: 'Done' }
         ],
 
+        // Your original init function
         async init() {
           await this.load();
           this.deriveCampaigns();
 
-          // --- ADD THIS TEST CODE ---
           console.log("Subscribing to 'test-channel'...");
           supabaseClient.channel('test-channel').subscribe((status) => {
             console.log("TEST CHANNEL STATUS:", status);
           });
-          // --- END OF TEST CODE ---
 
-          // --- Call the separate function to set up subscription ---
           this.initSubscription();
         },
 
-        // --- NEW FUNCTION TO HANDLE SUBSCRIPTION SETUP AND RETRY ---
+        // --- All your other methods (initSubscription, handleRealtimeChange, load, etc.) ---
+        // Make sure they use the 'supabaseClient' defined above
+        
         initSubscription() {
-            // Unsubscribe existing channels first to prevent duplicates if retrying
-            supabaseClient.removeAllChannels();
-
-            console.log("Attempting to subscribe to real-time updates...");
-            supabaseClient.channel('public:mediadb')
+          supabaseClient.removeAllChannels();
+          console.log("Attempting to subscribe to real-time updates...");
+          supabaseClient.channel('public:mediadb')
             .on(
               'postgres_changes',
               { event: '*', schema: 'public', table: 'mediadb' },
               (payload) => {
-                  // --- Add try-catch around handler call ---
-                  try {
-                    console.log('Real-time change received!', payload);
-                    this.handleRealtimeChange(payload);
-                  } catch (error) {
-                    console.error("Error processing real-time event:", error, payload);
-                  }
+                try {
+                  console.log('Real-time change received!', payload);
+                  this.handleRealtimeChange(payload);
+                } catch (error) {
+                  console.error("Error processing real-time event:", error, payload);
+                }
               }
             )
             .subscribe((status, err) => {
-              // --- Modified callback with retry logic ---
               if (status === 'SUBSCRIBED') {
                 console.log('✅ Successfully subscribed to real-time updates!');
-              } else if (status === 'CHANNEL_ERROR') {
-                console.error('❌ Realtime connection error:', status, err || '');
-                // Attempt to resubscribe after a delay
+              } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+                console.error(`❌ Realtime connection ${status}:`, err || '');
                 console.log('Attempting to re-subscribe in 5 seconds...');
-                setTimeout(() => this.initSubscription(), 5000); // Try again in 5s
-              } else if (status === 'TIMED_OUT') {
-                  console.error('❌ Realtime connection timed out. Retrying in 5 seconds...');
-                  setTimeout(() => this.initSubscription(), 5000);
+                setTimeout(() => this.initSubscription(), 5000);
               } else {
-                  console.warn('Realtime subscription status:', status);
+                console.warn('Realtime subscription status:', status);
               }
             });
         },
-
-
-        // --- UPDATED HANDLER WITH INTERNAL TRY-CATCH ---
+        
         handleRealtimeChange(payload) {
-          try {
-            let campaignListChanged = false;
+             // ... (Your existing logic) ...
+             // Make sure this logic uses 'this.db' correctly
+            try {
+                let campaignListChanged = false;
 
-            if (payload.eventType === 'INSERT') {
-              if (!this.db.some(item => item.id === payload.new.id)) {
-                // Use array spread for better reactivity guarantee
-                this.db = [payload.new, ...this.db];
-                if (payload.new.campaign && !this.campaigns.includes(payload.new.campaign)) {
-                  campaignListChanged = true;
-                }
-              } else {
-                  console.warn("Realtime: Received INSERT for existing ID, skipping:", payload.new.id);
-              }
-            }
-
-            else if (payload.eventType === 'UPDATE') {
-              const index = this.db.findIndex(r => r.id === payload.new.id);
-              if (index !== -1) {
-                  // Use array spread for update reactivity
-                  this.db = [
-                      ...this.db.slice(0, index),
-                      payload.new,
-                      ...this.db.slice(index + 1)
-                  ];
-                if (payload.new.campaign && !this.campaigns.includes(payload.new.campaign)) {
-                  campaignListChanged = true;
-                }
-              } else {
-                  console.warn("Realtime: Received UPDATE for non-existent ID, adding:", payload.new.id);
+                if (payload.eventType === 'INSERT') {
                   if (!this.db.some(item => item.id === payload.new.id)) {
-                      this.db = [payload.new, ...this.db]; // Add if truly missing
+                    this.db = [payload.new, ...this.db];
+                    if (payload.new.campaign && !this.campaigns.includes(payload.new.campaign)) {
+                      campaignListChanged = true;
+                    }
+                  } else {
+                      console.warn("Realtime: Received INSERT for existing ID, skipping:", payload.new.id);
                   }
-              }
+                }
+                else if (payload.eventType === 'UPDATE') {
+                  const index = this.db.findIndex(r => r.id === payload.new.id);
+                  if (index !== -1) {
+                      this.db = [
+                          ...this.db.slice(0, index),
+                          payload.new,
+                          ...this.db.slice(index + 1)
+                      ];
+                    if (payload.new.campaign && !this.campaigns.includes(payload.new.campaign)) {
+                      campaignListChanged = true;
+                    }
+                  } else {
+                      console.warn("Realtime: Received UPDATE for non-existent ID, adding:", payload.new.id);
+                      if (!this.db.some(item => item.id === payload.new.id)) {
+                          this.db = [payload.new, ...this.db]; 
+                      }
+                  }
+                }
+                else if (payload.eventType === 'DELETE') {
+                  const initialLength = this.db.length;
+                  this.db = this.db.filter(r => r.id !== payload.old.id);
+                  if(this.db.length < initialLength){
+                      campaignListChanged = true;
+                  }
+                }
+                if (campaignListChanged) {
+                  this.deriveCampaigns();
+                }
+            } catch (error) {
+                  console.error("Error inside handleRealtimeChange logic:", error, payload);
             }
-
-            else if (payload.eventType === 'DELETE') {
-              const initialLength = this.db.length;
-              this.db = this.db.filter(r => r.id !== payload.old.id);
-              if(this.db.length < initialLength){
-                  campaignListChanged = true;
-              }
-            }
-
-            if (campaignListChanged) {
-              this.deriveCampaigns();
-            }
-          } catch (error) {
-              console.error("Error inside handleRealtimeChange logic:", error, payload);
-          }
         },
-
+        
         deriveCampaigns() {
-          const allCampaigns = this.db
-            .map(r => r.campaign)
-            .filter(Boolean);
-          this.campaigns = [...new Set(allCampaigns)].sort();
+             // ... (Your existing logic) ...
+            const allCampaigns = this.db
+                .map(r => r.campaign)
+                .filter(Boolean);
+            this.campaigns = [...new Set(allCampaigns)].sort();
         },
-
+        
         async load() {
-          console.log("Loading initial data...");
-          const { data, error } = await supabaseClient
-            .from('mediadb')
-            .select('*')
-            .order('created_at', { ascending: false });
-
-          if (error) {
-              console.error('Error loading data:', error);
-              alert('Error loading data: ' + error.message);
-          } else {
-            console.log("Data loaded successfully.");
-            this.db = data;
-          }
-        },
-
-        async ingest() {
-          const campaignToAssign = this.addFormCampaign === 'unassigned' ? '' : this.addFormCampaign;
-          if (this.addFormCampaign === '') {
-            alert('Please select a campaign to assign these prospects to.');
-            return;
-          }
-          const lines = (this.pasteInput || '').split('\n').map(l => l.trim()).filter(Boolean);
-          if (lines.length === 0) return;
-
-          console.log(`Attempting to ingest ${lines.length} lines...`);
-          let newRows = [];
-          let currentDomains = new Set(this.db.map(r => r.domain)); // Cache existing domains
-
-          for (const line of lines) {
-            const domain = this.normalizeDomain(line.split(',')[0].trim());
-            if (!domain) continue;
-            if (currentDomains.has(domain)) continue; // Check against cached set
-             // Also check against rows already added in *this* batch
-            if (newRows.some(r => r.domain === domain)) continue;
-
-            newRows.push({
-              domain: domain,
-              campaign: campaignToAssign,
-              status: 'unvetted'
-            });
-          }
-
-          const uniqueNewRows = newRows; // Already filtered duplicates within the loop
-          const dupeCount = lines.length - uniqueNewRows.length;
-          const invalidCount = 0; // Simplified for now
-
-          if (uniqueNewRows.length > 0) {
-              console.log(`Inserting ${uniqueNewRows.length} unique new rows...`);
-            const { error } = await supabaseClient.from('mediadb').insert(uniqueNewRows);
+             // ... (Your existing logic using supabaseClient) ...
+            console.log("Loading initial data...");
+            // Use the supabaseClient defined within the event listener scope
+            const { data, error } = await supabaseClient
+                .from('mediadb')
+                .select('*')
+                .order('created_at', { ascending: false });
 
             if (error) {
-              console.error('Error creating prospects:', error);
-              alert('Error creating prospects: ' + error.message);
+                console.error('Error loading data:', error);
+                alert('Error loading data: ' + error.message);
             } else {
-              console.log("Prospects inserted successfully. Realtime should update UI.");
-              this.pasteInput = '';
-              this.ingestSummary = { total: lines.length, newCount: uniqueNewRows.length, dupeCount: dupeCount, invalidCount: invalidCount };
-              this.showAddForm = false;
+                console.log("Data loaded successfully.");
+                this.db = data;
             }
-          } else {
-              console.log("No unique new rows to insert.");
-              this.ingestSummary = { total: lines.length, newCount: 0, dupeCount: dupeCount, invalidCount: invalidCount };
-          }
+        },
+        
+        async ingest() {
+            // ... (Your existing logic using supabaseClient) ...
+            const campaignToAssign = this.addFormCampaign === 'unassigned' ? '' : this.addFormCampaign;
+              if (this.addFormCampaign === '') {
+                alert('Please select a campaign to assign these prospects to.');
+                return;
+              }
+              const lines = (this.pasteInput || '').split('\n').map(l => l.trim()).filter(Boolean);
+              if (lines.length === 0) return;
+
+              console.log(`Attempting to ingest ${lines.length} lines...`);
+              let newRows = [];
+              let currentDomains = new Set(this.db.map(r => r.domain)); // Cache existing domains
+
+              for (const line of lines) {
+                const domain = this.normalizeDomain(line.split(',')[0].trim());
+                if (!domain) continue;
+                if (currentDomains.has(domain)) continue; 
+                if (newRows.some(r => r.domain === domain)) continue;
+
+                newRows.push({
+                  domain: domain,
+                  campaign: campaignToAssign,
+                  status: 'unvetted'
+                });
+              }
+
+              const uniqueNewRows = newRows; 
+              const dupeCount = lines.length - uniqueNewRows.length;
+              const invalidCount = 0; 
+
+              if (uniqueNewRows.length > 0) {
+                  console.log(`Inserting ${uniqueNewRows.length} unique new rows...`);
+                const { error } = await supabaseClient.from('mediadb').insert(uniqueNewRows);
+
+                if (error) {
+                  console.error('Error creating prospects:', error);
+                  alert('Error creating prospects: ' + error.message);
+                } else {
+                  console.log("Prospects inserted successfully. Realtime should update UI.");
+                  this.pasteInput = '';
+                  this.ingestSummary = { total: lines.length, newCount: uniqueNewRows.length, dupeCount: dupeCount, invalidCount: invalidCount };
+                  this.showAddForm = false;
+                }
+              } else {
+                  console.log("No unique new rows to insert.");
+                  this.ingestSummary = { total: lines.length, newCount: 0, dupeCount: dupeCount, invalidCount: invalidCount };
+              }
         },
 
         async updateProspect(p) {
-          console.log(`Attempting to update prospect ID: ${p.id}`);
-          const { error } = await supabaseClient
-            .from('mediadb')
-            .update({
-              status: p.status,
-              contact: p.contact,
-              notes: p.notes,
-              campaign: p.campaign
-            })
-            .eq('id', p.id);
+            // ... (Your existing logic using supabaseClient) ...
+            console.log(`Attempting to update prospect ID: ${p.id}`);
+              const { error } = await supabaseClient
+                .from('mediadb')
+                .update({
+                  status: p.status,
+                  contact: p.contact,
+                  notes: p.notes,
+                  campaign: p.campaign
+                })
+                .eq('id', p.id);
 
-          if (error) {
-              console.error('Error updating prospect:', error);
-              alert('Error updating prospect: ' + error.message);
-          } else {
-              console.log("Prospect updated successfully. Realtime should update UI.");
-          }
+              if (error) {
+                  console.error('Error updating prospect:', error);
+                  alert('Error updating prospect: ' + error.message);
+              } else {
+                  console.log("Prospect updated successfully. Realtime should update UI.");
+              }
         },
 
         async deleteProspect(id) {
-          if (!confirm('Delete this prospect?')) return;
-          console.log(`Attempting to delete prospect ID: ${id}`);
-          const { error } = await supabaseClient
-            .from('mediadb')
-            .delete()
-            .eq('id', id);
+            // ... (Your existing logic using supabaseClient) ...
+            if (!confirm('Delete this prospect?')) return;
+              console.log(`Attempting to delete prospect ID: ${id}`);
+              const { error } = await supabaseClient
+                .from('mediadb')
+                .delete()
+                .eq('id', id);
 
-          if (error) {
-              console.error('Error deleting prospect:', error);
-              alert('Error deleting prospect: ' + error.message);
-          } else {
-              console.log("Prospect deleted successfully. Realtime should update UI.");
-          }
+              if (error) {
+                  console.error('Error deleting prospect:', error);
+                  alert('Error deleting prospect: ' + error.message);
+              } else {
+                  console.log("Prospect deleted successfully. Realtime should update UI.");
+              }
         },
 
         // --- HELPER FUNCTIONS ---
-        normalizeDomain(input) {
-          let s = (input || '').trim().toLowerCase();
-          s = s.replace(/^(https?:\/\/|ftp:\/\/)/, '').replace(/^[^@]+@/, '');
-          s = s.split(/[/?#]/)[0].split(':')[0].replace(/^www\./, '').replace(/\.$/, '');
-          if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(s)) return null;
-          return s;
+         normalizeDomain(input) {
+             // ... (Your existing logic) ...
+            let s = (input || '').trim().toLowerCase();
+              s = s.replace(/^(https?:\/\/|ftp:\/\/)/, '').replace(/^[^@]+@/, '');
+              s = s.split(/[/?#]/)[0].split(':')[0].replace(/^www\./, '').replace(/\.$/, '');
+              if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(s)) return null;
+              return s;
         },
         addNewCampaign() {
+             // ... (Your existing logic) ...
             const name = this.newCampaignName.trim();
-            if (!name) { alert('Please enter a campaign name.'); return; }
-            if (this.campaigns.some(c => c.toLowerCase() === name.toLowerCase())) { alert('Campaign already exists.'); return; }
-            this.campaigns.push(name); this.campaigns.sort();
-            this.addFormCampaign = name; this.newCampaignName = '';
-            this.showNewCampaignInput = false;
+                if (!name) { alert('Please enter a campaign name.'); return; }
+                if (this.campaigns.some(c => c.toLowerCase() === name.toLowerCase())) { alert('Campaign already exists.'); return; }
+                this.campaigns.push(name); this.campaigns.sort();
+                this.addFormCampaign = name; this.newCampaignName = '';
+                this.showNewCampaignInput = false;
         },
         get filtered() {
-          let rows = this.db; // Start with reactive db
-          if (this.selectedCampaign !== 'all') { rows = rows.filter(r => r.campaign === this.selectedCampaign || (this.selectedCampaign === '' && !r.campaign)); }
-          if (this.filterStatus) { rows = rows.filter(r => r.status === this.filterStatus); }
-          if (this.hideRejected) { rows = rows.filter(r => r.status !== 'rejected'); }
-          const q = this.search.trim().toLowerCase();
-          if (q) { rows = rows.filter(r => r.domain.includes(q) || (r.contact || '').toLowerCase().includes(q) || (r.notes || '').toLowerCase().includes(q) || (r.campaign || '').toLowerCase().includes(q)); }
-          // Sorting creates a *new* array, which is fine for display
-          return [...rows].sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
+             // ... (Your existing logic) ...
+            let rows = this.db; 
+              if (this.selectedCampaign !== 'all') { rows = rows.filter(r => r.campaign === this.selectedCampaign || (this.selectedCampaign === '' && !r.campaign)); }
+              if (this.filterStatus) { rows = rows.filter(r => r.status === this.filterStatus); }
+              if (this.hideRejected) { rows = rows.filter(r => r.status !== 'rejected'); }
+              const q = this.search.trim().toLowerCase();
+              if (q) { rows = rows.filter(r => r.domain.includes(q) || (r.contact || '').toLowerCase().includes(q) || (r.notes || '').toLowerCase().includes(q) || (r.campaign || '').toLowerCase().includes(q)); }
+              
+              return [...rows].sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
         },
         countByStatus(status) {
-          let relevantData = this.db;
-          if (this.selectedCampaign !== 'all') { relevantData = this.db.filter(r => r.campaign === this.selectedCampaign || (this.selectedCampaign === '' && !r.campaign)); }
-          return relevantData.filter(r => r.status === status).length;
+             // ... (Your existing logic) ...
+            let relevantData = this.db;
+              if (this.selectedCampaign !== 'all') { relevantData = this.db.filter(r => r.campaign === this.selectedCampaign || (this.selectedCampaign === '' && !r.campaign)); }
+              return relevantData.filter(r => r.status === status).length;
         },
         formatDate(iso) {
-          if (!iso) return '';
-          const d = new Date(iso);
-          return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+             // ... (Your existing logic) ...
+            if (!iso) return '';
+              const d = new Date(iso);
+              return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         },
         exportCSV(all) {
-          let rowsToExport;
-          if (all) {
-              if (this.selectedCampaign !== 'all') { rowsToExport = this.db.filter(r => r.campaign === this.selectedCampaign || (this.selectedCampaign === '' && !r.campaign)); }
-              else { rowsToExport = this.db.slice(); } // Use slice for safety
-              rowsToExport.sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
-          } else { rowsToExport = this.filtered; } // filtered already returns a sorted array
-          const headers = ['id', 'domain', 'status', 'contact', 'notes', 'created_at', 'campaign'];
-          const escape = v => `"${String(v || '').replace(/"/g,'""')}"`;
-          const csv = [headers.join(',')].concat(rowsToExport.map(r => headers.map(h => escape(r[h])).join(','))).join('\n');
-          const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' }); const url = URL.createObjectURL(blob);
-          const a = document.createElement('a'); a.href = url;
-          let campaignName = 'all_campaigns';
-          if (this.selectedCampaign === '') { campaignName = 'unassigned'; }
-          else if (this.selectedCampaign !== 'all') { campaignName = this.selectedCampaign.replace(/[^a-z0-9]/gi, '_').toLowerCase(); }
-          a.download = `prospects_${campaignName}_${all?'all':'filtered'}_${new Date().toISOString().replace(/[:.]/g,'-')}.csv`; a.click(); URL.revokeObjectURL(url);
-        },
-      };
-    }
+            // ... (Your existing logic) ...
+            let rowsToExport;
+              if (all) {
+                  if (this.selectedCampaign !== 'all') { rowsToExport = this.db.filter(r => r.campaign === this.selectedCampaign || (this.selectedCampaign === '' && !r.campaign)); }
+                  else { rowsToExport = this.db.slice(); } 
+                  rowsToExport.sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
+              } else { rowsToExport = this.filtered; } 
+              const headers = ['id', 'domain', 'status', 'contact', 'notes', 'created_at', 'campaign'];
+              const escape = v => `"${String(v || '').replace(/"/g,'""')}"`;
+              const csv = [headers.join(',')].concat(rowsToExport.map(r => headers.map(h => escape(r[h])).join(','))).join('\n');
+              const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' }); const url = URL.createObjectURL(blob);
+              const a = document.createElement('a'); a.href = url;
+              let campaignName = 'all_campaigns';
+              if (this.selectedCampaign === '') { campaignName = 'unassigned'; }
+              else if (this.selectedCampaign !== 'all') { campaignName = this.selectedCampaign.replace(/[^a-z0-9]/gi, '_').toLowerCase(); }
+              a.download = `prospects_${campaignName}_${all?'all':'filtered'}_${new Date().toISOString().replace(/[:.]/g,'-')}.csv`; a.click(); URL.revokeObjectURL(url);
+        }
+
+      }));
+    });
   </script>
 
   <style>
@@ -319,190 +323,9 @@
 </head>
 
 <body class="h-full bg-gray-50 text-gray-900">
-<div class="max-w-7xl mx-auto p-4" x-data="prospectApp()" x-init="init()">
-
-  <div class="flex items-start sm:items-center justify-between gap-4 flex-col sm:flex-row">
-    <div>
-      <h1 class="text-2xl font-semibold">Media Prospect Manager</h1>
-      <p class="text-sm text-gray-600">Now powered by Supabase — fast, real-time, and jank-free.</p>
-    </div>
-    <div class="flex gap-2">
-      <button @click="exportCSV(false)"
-              class="px-3 py-2 text-sm rounded-md border bg-white hover:bg-gray-50">Export Filtered CSV</button>
-      <button @click="exportCSV(true)"
-              class="px-3 py-2 text-sm rounded-md border bg-white hover:bg-gray-50">Export All CSV</button>
-    </div>
-  </div>
-
-  <div class="grid grid-cols-2 md:grid-cols-6 gap-3 mt-4">
-    <template x-for="s in statuses" :key="s.value">
-      <div class="rounded-lg border bg-white p-3">
-        <div class="text-xs text-gray-500" x-text="s.label"></div>
-        <div class="text-xl font-semibold" x-text="countByStatus(s.value)"></div>
-      </div>
-    </template>
-  </div>
-
-  <div class="mt-6 text-right">
-      <button @click="showAddForm = true" x-show="!showAddForm"
-              class="px-4 py-2 rounded-md text-white bg-gray-900 hover:bg-gray-800">
-        Add New Prospects
-      </button>
-  </div>
-
-  <div class="mt-6 rounded-lg border bg-white p-4" x-show="showAddForm" x-transition>
-    <div class="flex justify-between items-center mb-3">
-      <h2 class="font-medium">Add Prospects (Paste Only)</h2>
-      <button @click="showAddForm = false; ingestSummary = { total: 0 }; pasteInput = ''" class="text-sm text-gray-600 hover:underline">Cancel</button>
-    </div>
-    <div class="grid md:grid-cols-3 gap-3">
-      <div class="md:col-span-2">
-        <label class="block text-sm text-gray-700 mb-1">Paste list of domains or URLs (one per line)</label>
-        <textarea x-model="pasteInput"
-                  placeholder="example.com
-https://www.site.com/about
-blog.domain.co.uk"
-                  class="w-full border rounded-md p-2 h-32"></textarea>
-        <p class="text-xs text-gray-500 mt-1">Cleans to root domains, lowercases, and skips duplicates. Assign a campaign on the right.</p>
-      </div>
-
-      <div>
-        <label class="block text-sm text-gray-700 mb-1 flex justify-between items-center">
-          <span>Assign to Campaign</span>
-          <button @click="showNewCampaignInput = !showNewCampaignInput" x-show="!showNewCampaignInput"
-                  class="text-xs text-blue-600 hover:underline focus:outline-none">
-            + New
-          </button>
-        </label>
-        <select x-model="addFormCampaign" class="w-full border rounded-md p-2">
-          <option value="">-- Select Campaign --</option>
-          <template x-for="campaign in campaigns" :key="campaign">
-            <option :value="campaign" x-text="campaign"></option>
-          </template>
-          <option value="unassigned">Unassigned</option>
-        </select>
-
-        <div x-show="showNewCampaignInput" class="mt-2 flex gap-2" x-transition>
-          <input type="text" x-model="newCampaignName" placeholder="New campaign name..."
-                 class="flex-grow border rounded-md p-1 text-sm">
-          <button @click="addNewCampaign()"
-                  class="px-2 py-1 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700">Add</button>
-          <button @click="showNewCampaignInput = false; newCampaignName = ''"
-                  class="px-2 py-1 text-sm text-gray-600 hover:underline">Cancel</button>
-        </div>
-
-        <button @click="ingest()"
-                class="mt-4 w-full px-3 py-2 rounded-md text-white bg-gray-900 hover:bg-gray-800">
-          Add Prospects
-        </button>
-      </div>
+  <div class="max-w-7xl mx-auto p-4" x-data="prospectApp()" x-init="init()">
+    
     </div>
 
-    <template x-if="ingestSummary.total > 0">
-      <div class="mt-3 text-sm">
-        <span class="inline-block mr-3">Total: <strong x-text="ingestSummary.total"></strong></span>
-        <span class="inline-block mr-3 text-green-700">Added: <strong x-text="ingestSummary.newCount"></strong></span>
-        <span class="inline-block mr-3 text-amber-700">Duplicates: <strong x-text="ingestSummary.dupeCount"></strong></span>
-        <span class="inline-block text-red-700" x-show="ingestSummary.invalidCount > 0">Invalid: <strong x-text="ingestSummary.invalidCount"></strong></span>
-      </div>
-    </template>
-  </div>
-
-  <div class="mt-6 grid grid-cols-1 md:grid-cols-4 gap-3">
-    <div class="md:col-span-2">
-      <label class="text-sm text-gray-700">Search</label>
-      <input type="search" x-model.debounce.300ms="search"
-             placeholder="Search domain, contact info, notes, or campaign..."
-             class="w-full border rounded-md p-2"/>
-    </div>
-    <div>
-      <label class="text-sm text-gray-700 flex justify-between items-center">
-        <span>Filter by Campaign</span>
-      </label>
-      <select x-model="selectedCampaign" class="w-full border rounded-md p-2">
-        <option value="all">All Campaigns</option>
-        <template x-for="campaign in campaigns" :key="campaign">
-          <option :value="campaign" x-text="campaign"></option>
-        </template>
-        <option value="">Unassigned</option>
-      </select>
-    </div>
-    <div>
-      <label class="text-sm text-gray-700">Filter by Status</label>
-      <select x-model="filterStatus" class="w-full border rounded-md p-2">
-        <option value="">All</option>
-        <template x-for="s in statuses" :key="'filter-'+s.value">
-          <option :value="s.value" x-text="s.label"></option>
-        </template>
-      </select>
-    </div>
-    <div class="flex items-end">
-      <label class="inline-flex items-center gap-2">
-        <input type="checkbox" x-model="hideRejected" class="rounded border-gray-300">
-        <span class="text-sm">Hide Rejected</span>
-      </label>
-    </div>
-  </div>
-
-  <div class="mt-4 overflow-auto rounded-lg border bg-white">
-    <table class="min-w-full text-sm">
-      <thead class="bg-gray-50 text-gray-600">
-        <tr>
-          <th class="p-2 text-left">Domain</th>
-          <th class="p-2 text-left">Status</th>
-          <th class="p-2 text-left">Contact Info</th>
-          <th class="p-2 text-left">Notes</th>
-          <th class="p-2 text-left">Date Added</th>
-          <th class="p-2 text-left">Campaign</th>
-          <th class="p-2 text-left">Actions</th>
-        </tr>
-      </thead>
-      <tbody>
-        <template x-if="filtered.length === 0">
-          <tr><td colspan="7" class="p-4 text-center text-gray-500">No prospects match your filters.</td></tr>
-        </template>
-        <template x-for="p in filtered" :key="p.id">
-          <tr class="border-t">
-            <td class="p-2 font-medium" x-text="p.domain"></td>
-            <td class="p-2">
-              <select class="border rounded-md p-1"
-                      x-model="p.status"
-                      @change="updateProspect(p)">
-                <template x-for="s in statuses" :key="s.value">
-                  <option :value="s.value" x-text="s.label"></option>
-                </template>
-              </select>
-            </td>
-            <td class="p-2">
-              <input type="text" class="w-64 max-w-full border rounded-md p-1"
-                     x-model="p.contact"
-                     @change="updateProspect(p)">
-            </td>
-            <td class="p-2">
-              <textarea class="w-80 max-w-full border rounded-md p-1"
-                        x-model="p.notes"
-                        @change="updateProspect(p)"></textarea>
-            </td>
-            <td class="p-2 text-gray-700" x-text="formatDate(p.created_at)"></td>
-            <td class="p-2">
-              <select class="border rounded-md p-1"
-                      x-model="p.campaign"
-                      @change="updateProspect(p)">
-                <option value="">Unassigned</option>
-                <template x-for="cName in campaigns" :key="cName">
-                  <option :value="cName" x-text="cName"></option>
-                </template>
-              </select>
-            </td>
-            <td class="p-2">
-              <button class="text-xs text-red-600 hover:underline" @click="deleteProspect(p.id)">Delete</button>
-            </td>
-          </tr>
-        </template>
-      </tbody>
-    </table>
-  </div>
-
-</div>
-</body>
+  </body>
 </html>
