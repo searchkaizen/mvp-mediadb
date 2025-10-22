@@ -13,29 +13,49 @@
 
   <script>
     console.log("App script running. Is Supabase ready?", typeof supabase);
-    // Add check
-    if (typeof supabase === 'undefined') {
-        alert("CRITICAL ERROR: Supabase library failed to load before app script!");
-        // You might want to throw an error or return early
-        // throw new Error("Supabase failed to load");
+    // Add check in case Supabase loading fails entirely
+    if (typeof supabase === 'undefined' || !supabase.createClient) {
+        alert("CRITICAL ERROR: Supabase library failed to load correctly!");
+        // Stop further execution by throwing an error
+        throw new Error("Supabase library failed to load");
     }
 
     // --- Supabase Client Setup ---
     const { createClient } = supabase; // Needed for this UMD version
     const supabaseClient = createClient(
-  'https://mfjymrrykhvfkivtvgit.supabase.co',
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1manltcnJ5a2h2ZmtpdnR2Z2l0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjEwNzY1MzksImV4cCI6MjA3NjY1MjUzOX0.wgn7fZgL8vmedKWmJ8BNfwbaOzZ4ZFltqcDrkEDvsnw'
-);
+      'https://mfjymrrykhvfkivtvgit.supabase.co',
+      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1manltcnJ5a2h2ZmtpdnR2Z2l0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjEwNzY1MzksImV4cCI6MjA3NjY1MjUzOX0.wgn7fZgL8vmedKWmJ8BNfwbaOzZ4ZFltqcDrkEDvsnw' // User's key
+    );
     console.log("supabaseClient created:", !!supabaseClient);
 
     // --- Define Alpine Data Function Globally ---
     function prospectApp() {
         console.log("prospectApp function called by Alpine");
-        // ... PASTE your entire 'return { ... }' object HERE ...
-        // (Including init(), load(), initSubscription(), handleRealtimeChange(), etc.)
-       return {
-            db: [],
-            // ... all properties ...
+        return {
+            // --- DEFINE ALL REACTIVE PROPERTIES UPFRONT ---
+            db: [], // Initialize database array
+            pasteInput: '',
+            ingestSummary: { total: 0, newCount: 0, dupeCount: 0, invalidCount: 0 },
+            search: '', // For the search input
+            filterStatus: '', // For the status dropdown
+            hideRejected: false, // For the checkbox
+            showAddForm: false, // Controls visibility of the add form
+            addFormCampaign: '', // For the campaign dropdown in the add form
+            campaigns: [], // List of available campaigns
+            selectedCampaign: 'all', // For the main campaign filter dropdown
+            newCampaignName: '',
+            showNewCampaignInput: false,
+            // Initialize statuses array directly
+            statuses: [
+              { value: 'unvetted', label: 'Unvetted' },
+              { value: 'good', label: 'Good Fit' },
+              { value: 'rejected', label: 'Rejected' },
+              { value: 'contacted', label: 'Contacted' },
+              { value: 'done', label: 'Done' }
+            ],
+            // --- END OF PROPERTY DEFINITIONS ---
+
+            // --- METHODS ---
             async init() {
                console.log("Alpine init() called by x-init");
                if (!supabaseClient) {
@@ -43,13 +63,14 @@
                   alert("Initialization Error: Supabase client missing.");
                   return;
                }
-               await this.load();
-               this.deriveCampaigns(); // Ensure this method exists
-               this.initSubscription();
+               await this.load(); // Load initial data
+               // deriveCampaigns is called within load() now
+               this.initSubscription(); // Start listening for realtime updates
              },
+
             async load() {
                  console.log("load() called.");
-                 if (!supabaseClient) { console.error("Load failed: supabaseClient missing"); return; }
+                 if (!supabaseClient) { console.error("Load failed: supabaseClient missing"); this.db = []; return; } // Set db to empty array on failure
                  console.log("Loading initial data...");
                  try {
                      const { data, error, status } = await supabaseClient
@@ -57,25 +78,28 @@
                          .select('*')
                          .order('created_at', { ascending: false });
 
-                     if (error && status !== 406) {
+                     if (error && status !== 406) { // 406 is often "No rows found", not necessarily an error
                          console.error('Error loading data:', status, error.message);
                          alert('Error loading data. Check console.');
+                         this.db = []; // Set to empty on error
                      } else {
                          console.log(`Data loaded successfully (${data?.length || 0} rows). Status: ${status}`);
-                         this.db = data || [];
-                         this.deriveCampaigns(); // Derive after loading
+                         this.db = data || []; // Ensure db is always an array
+                         this.deriveCampaigns(); // Derive campaigns *after* data is loaded
                      }
                  } catch (err) {
                      console.error("Exception during load():", err);
                      alert("Failed to load data due to an exception. Check console.");
+                     this.db = []; // Set to empty on exception
                  }
             },
+
             initSubscription() {
                  console.log('initSubscription() called.');
                  if (!supabaseClient) { console.error("Subscribe failed: supabaseClient missing"); return; }
-                 supabaseClient.removeAllChannels();
+                 supabaseClient.removeAllChannels(); // Clean up previous subscriptions if any
                  console.log("Attempting to subscribe to real-time updates...");
-                 const channel = supabaseClient.channel('public:mediadb');
+                 const channel = supabaseClient.channel('public:mediadb'); // Specific channel name
 
                  channel.on(
                    'postgres_changes',
@@ -94,16 +118,17 @@
                    } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
                      console.error(`❌ Realtime connection ${status}:`, err || 'No error details provided.');
                      console.log('🔄 Attempting to re-subscribe in 5 seconds...');
-                     // Simple retry
-                     setTimeout(() => this.initSubscription(), 5000);
+                     // Attempt to remove the failed channel before retrying
+                     supabaseClient.removeChannel(channel).catch(removeErr => console.error("Error removing channel before retry:", removeErr));
+                     setTimeout(() => this.initSubscription(), 5000); // Simple retry
                    } else {
-                     console.info('ℹ️ Realtime subscription status:', status);
+                     console.info('ℹ️ Realtime subscription status:', status); // Log other statuses like 'connecting'
                    }
                  });
              },
+
              handleRealtimeChange(payload) {
-                 // ... your existing logic ...
-                  try {
+                 try {
                      let campaignListChanged = false;
                      const eventType = payload.eventType;
                      const newData = payload.new;
@@ -112,29 +137,32 @@
                      console.log(`Handling Realtime ${eventType}...`);
 
                      if (eventType === 'INSERT') {
+                         // Add check to prevent duplicates if realtime delivers faster than UI update
                          if (!this.db.some(item => item.id === newData.id)) {
-                             this.db = [newData, ...this.db];
+                             this.db = [newData, ...this.db]; // Prepend new item for immediate visibility
                              console.log(`Added new item ID ${newData.id}`);
                              if (newData.campaign && !this.campaigns.includes(newData.campaign)) campaignListChanged = true;
                          } else {
-                             console.warn("Realtime: Received INSERT for existing ID:", newData.id);
+                             console.warn("Realtime: Received INSERT for existing ID, likely already added:", newData.id);
                          }
                      } else if (eventType === 'UPDATE') {
                          const index = this.db.findIndex(r => r.id === newData.id);
                          if (index !== -1) {
+                              // Ensure reactivity: create new array reference
                               this.db = this.db.map(item => item.id === newData.id ? newData : item);
                               console.log(`Updated item ID ${newData.id}`);
                              if (newData.campaign && !this.campaigns.includes(newData.campaign)) campaignListChanged = true;
                          } else {
-                             console.warn("Realtime: Received UPDATE for non-existent ID, adding:", newData.id);
-                             this.db = [newData, ...this.db];
+                             // Optional: Handle updates for items not currently in the local list (e.g., due to filtering)
+                             console.warn("Realtime: Received UPDATE for item not in current view/DB:", newData.id);
+                             // Could potentially add it: this.db = [newData, ...this.db];
                          }
                      } else if (eventType === 'DELETE') {
                          const initialLength = this.db.length;
-                         this.db = this.db.filter(r => r.id !== oldData.id);
+                         this.db = this.db.filter(r => r.id !== oldData.id); // Filter out the deleted item
                          if (this.db.length < initialLength) {
                              console.log(`Deleted item ID ${oldData.id}`);
-                             campaignListChanged = true;
+                             campaignListChanged = true; // Need to re-derive if campaigns changed
                          } else {
                               console.warn("Realtime: Received DELETE for non-existent ID:", oldData.id);
                          }
@@ -148,21 +176,23 @@
                      console.error("Error inside handleRealtimeChange logic:", error, payload);
                  }
              },
+
              deriveCampaigns() {
-                 // ... your existing logic ...
                 const allCampaigns = this.db
                     .map(r => r.campaign)
-                    .filter(Boolean);
-                const uniqueCampaigns = [...new Set(allCampaigns)].sort((a, b) => a.localeCompare(b));
+                    .filter(Boolean); // Filter out null/undefined/empty strings
+                const uniqueCampaigns = [...new Set(allCampaigns)].sort((a, b) => a.localeCompare(b)); // Case-sensitive sort
+
+                // Only update Alpine state if the campaigns list actually changed
                 if (JSON.stringify(this.campaigns) !== JSON.stringify(uniqueCampaigns)) {
                     this.campaigns = uniqueCampaigns;
                     console.log("Updated campaigns list:", this.campaigns);
                 }
              },
-            // --- Paste ALL other methods HERE ---
+
             async ingest() {
                 const campaignToAssign = this.addFormCampaign === 'unassigned' ? '' : this.addFormCampaign;
-                if (!this.addFormCampaign) {
+                if (!this.addFormCampaign) { // Check specifically if a selection was made
                     alert('Please select a campaign to assign these prospects to.');
                     return;
                 }
@@ -174,11 +204,13 @@
 
                 console.log(`Attempting to ingest ${lines.length} lines for campaign: ${campaignToAssign || 'Unassigned'}`);
                 let newRows = [];
-                let currentDomains = new Set(this.db.map(r => r.domain?.toLowerCase()));
+                // Ensure db is loaded before using it
+                let currentDomains = new Set((this.db || []).map(r => r.domain?.toLowerCase()));
                 let skippedDupes = 0;
                 let skippedInvalid = 0;
 
                 for (const line of lines) {
+                    // Normalize domain robustly
                     const domain = this.normalizeDomain(line.split(/[,;\s\t]/)[0]);
                     if (!domain) {
                         console.warn(`Skipping invalid input line: "${line}"`);
@@ -186,6 +218,7 @@
                         continue;
                     }
                     const lowerDomain = domain.toLowerCase();
+                    // Check existing DB and current batch for duplicates
                     if (currentDomains.has(lowerDomain) || newRows.some(r => r.domain.toLowerCase() === lowerDomain)) {
                         console.log(`Skipping duplicate domain: ${domain}`);
                         skippedDupes++;
@@ -193,7 +226,7 @@
                     }
 
                     newRows.push({
-                        domain: domain,
+                        domain: domain, // Store normalized domain
                         campaign: campaignToAssign,
                         status: 'unvetted'
                     });
@@ -202,6 +235,7 @@
                 const dupeCount = skippedDupes;
                 const invalidCount = skippedInvalid;
                 const newCount = newRows.length;
+                // Update summary immediately for feedback
                 this.ingestSummary = { total: lines.length, newCount, dupeCount, invalidCount };
 
                 if (newCount > 0) {
@@ -213,12 +247,15 @@
                         alert('Error creating prospects. Check console.');
                     } else {
                         console.log("Prospects inserted successfully via API call.");
-                        this.pasteInput = '';
-                        this.showAddForm = false;
+                        this.pasteInput = ''; // Clear input only on success
+                        this.showAddForm = false; // Close form only on success
+                        // Realtime should update the list, but deriveCampaigns might be needed if not fully reactive
+                        // this.deriveCampaigns();
                     }
                 } else {
                     console.log("No unique new domains found to insert.");
-                    alert(`Processed ${lines.length} lines. Found ${dupeCount} duplicates and ${skippedInvalid} invalid entries. No new prospects added.`);
+                    alert(`Processed ${lines.length} lines. Found ${dupeCount} duplicates and ${invalidCount} invalid entries. No new prospects added.`);
+                    // Keep form open for correction?
                 }
             },
 
@@ -226,7 +263,7 @@
                 console.log(`Attempting to update prospect ID: ${p.id}`);
                 const { error } = await supabaseClient
                     .from('mediadb')
-                    .update({
+                    .update({ // Send only changed data if possible, but here we send all
                         status: p.status,
                         contact: p.contact,
                         notes: p.notes,
@@ -237,8 +274,11 @@
                 if (error) {
                     console.error('Error updating prospect:', error.message);
                     alert('Error updating prospect. Check console.');
+                    // Consider reloading data or reverting local change on error
+                    // await this.load();
                 } else {
                     console.log(`Prospect ${p.id} updated successfully via API call.`);
+                     // Update campaigns if a new one was potentially added/selected
                      if(p.campaign && !this.campaigns.includes(p.campaign)) {
                           this.deriveCampaigns();
                       }
@@ -246,7 +286,7 @@
             },
 
             async deleteProspect(id) {
-                if (!confirm(`Are you sure you want to delete prospect ID: ${id}?`)) return;
+                if (!confirm(`Are you sure you want to delete prospect ID: ${id}? This cannot be undone.`)) return;
                 console.log(`Attempting to delete prospect ID: ${id}`);
                 const { error } = await supabaseClient
                     .from('mediadb')
@@ -258,70 +298,90 @@
                     alert('Error deleting prospect. Check console.');
                 } else {
                     console.log(`Prospect ${id} deleted successfully via API call.`);
+                    // Realtime should remove the item from this.db via handleRealtimeChange
                 }
             },
 
              normalizeDomain(input) {
                 let s = (input || '').trim().toLowerCase();
-                s = s.replace(/^(?:https?:\/\/|ftp:\/\/)?(?:www\.)?/i, '');
-                s = s.replace(/^[^@]+@/, '');
+                // Remove protocol, www, and email prefix
+                s = s.replace(/^(?:https?:\/\/|ftp:\/\/)?(?:www\.)?/i, '').replace(/^[^@]+@/, '');
+                // Remove port, path, query, fragment
                 s = s.split(/[:/?#]/)[0];
+                // Remove trailing dot
                 s = s.replace(/\.$/, '');
-                if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/i.test(s)) return null;
+                // Validate domain format (basic)
+                if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/i.test(s)) {
+                    console.warn(`Invalid domain format detected: ${input} -> ${s}`);
+                    return null;
+                }
                 return s;
             },
             addNewCampaign() {
                 const name = this.newCampaignName.trim();
                 if (!name) { alert('Please enter a valid campaign name.'); return; }
+                // Case-insensitive check
                 if (this.campaigns.some(c => c.toLowerCase() === name.toLowerCase())) {
                     alert(`Campaign "${name}" already exists.`);
                     return;
                 }
                 this.campaigns.push(name);
-                this.campaigns.sort((a, b) => a.localeCompare(b));
-                this.addFormCampaign = name;
+                this.campaigns.sort((a, b) => a.localeCompare(b)); // Ensure sorted list
+                this.addFormCampaign = name; // Auto-select the newly added campaign
                 this.newCampaignName = '';
                 this.showNewCampaignInput = false;
             },
             get filtered() {
-                 // Keep the robust version
-                let rows = this.db;
-                if (this.selectedCampaign === '') {
+                console.log("Filtering data..."); // Log when getter runs
+                // Ensure db is an array before filtering
+                let rows = Array.isArray(this.db) ? this.db : [];
+
+                // Apply filters sequentially
+                if (this.selectedCampaign === '') { // Explicit check for Unassigned
                    rows = rows.filter(r => !r.campaign);
                 } else if (this.selectedCampaign !== 'all') {
                    rows = rows.filter(r => r.campaign === this.selectedCampaign);
                 }
-                if (this.filterStatus) rows = rows.filter(r => r.status === this.filterStatus);
-                if (this.hideRejected) rows = rows.filter(r => r.status !== 'rejected');
-                const q = this.search.trim().toLowerCase();
+                if (this.filterStatus) {
+                   rows = rows.filter(r => r.status === this.filterStatus);
+                }
+                if (this.hideRejected) {
+                   rows = rows.filter(r => r.status !== 'rejected');
+                }
+                const q = (this.search || '').trim().toLowerCase(); // Ensure search is a string
                 if (q) {
                     rows = rows.filter(r =>
-                      (r.domain?.toLowerCase() || '').includes(q) ||
+                      (r.domain?.toLowerCase() || '').includes(q) || // Null checks
                       (r.contact?.toLowerCase() || '').includes(q) ||
                       (r.notes?.toLowerCase() || '').includes(q) ||
                       (r.campaign?.toLowerCase() || '').includes(q)
                     );
                 }
+                // Return a new sorted array to help reactivity
                 return [...rows].sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
             },
             countByStatus(status) {
-                // Keep the robust version
-                let relevantData = this.db;
+                // Ensure db is an array
+                let relevantData = Array.isArray(this.db) ? this.db : [];
+                // Filter by campaign first
                 if (this.selectedCampaign === '') {
-                   relevantData = this.db.filter(r => !r.campaign);
+                   relevantData = relevantData.filter(r => !r.campaign);
                 } else if (this.selectedCampaign !== 'all') {
-                   relevantData = this.db.filter(r => r.campaign === this.selectedCampaign);
+                   relevantData = relevantData.filter(r => r.campaign === this.selectedCampaign);
                 }
+                // Then count by status
                 return relevantData.filter(r => r.status === status).length;
             },
             formatDate(iso) {
-                 // Keep the robust version
-                 if (!iso) return 'N/A';
+                 if (!iso) return 'N/A'; // Better handling for missing dates
                  try {
                      const d = new Date(iso);
-                     return d.toLocaleString(undefined, {
+                     // Check if date is valid
+                     if (isNaN(d.getTime())) return 'Invalid Date';
+                     // Use locale-aware formatting
+                     return d.toLocaleString(undefined, { // User's locale
                          year: 'numeric', month: 'numeric', day: 'numeric',
-                         hour: '2-digit', minute: '2-digit'
+                         hour: '2-digit', minute: '2-digit', hour12: true // Example: AM/PM
                      });
                  } catch (e) {
                      console.error("Error formatting date:", iso, e);
@@ -329,20 +389,25 @@
                  }
             },
             exportCSV(all) {
-                 // Keep the robust version
                  let rowsToExport;
                  let campaignName = 'all_campaigns';
                  if (this.selectedCampaign === '') { campaignName = 'unassigned'; }
                  else if (this.selectedCampaign !== 'all') { campaignName = this.selectedCampaign.replace(/[^a-z0-9]/gi, '_').toLowerCase(); }
 
                  if (all) {
+                     // Filter based on selected campaign for "Export All"
                      rowsToExport = this.selectedCampaign !== 'all'
                          ? this.db.filter(r => this.selectedCampaign === '' ? !r.campaign : r.campaign === this.selectedCampaign)
-                         : this.db.slice();
+                         : this.db.slice(); // Use full db only if "All Campaigns" is selected
+                     // Sort the full export
                      rowsToExport.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
                  } else {
+                     // Use the already filtered+sorted getter for "Export Filtered"
                      rowsToExport = this.filtered;
-                     if(this.selectedCampaign !== 'all') campaignName = `filtered_${campaignName}`;
+                     // Adjust filename if exporting filtered results
+                     if (this.selectedCampaign !== 'all' || this.filterStatus || this.hideRejected || this.search) {
+                        campaignName = `filtered_${campaignName}`;
+                     }
                  }
 
                  if (!rowsToExport || rowsToExport.length === 0) {
@@ -351,18 +416,27 @@
                  }
 
                  const headers = ['id', 'domain', 'status', 'contact', 'notes', 'created_at', 'campaign'];
+                 // Robust escape function
                  const escape = v => `"${String(v === null || v === undefined ? '' : v).replace(/"/g, '""')}"`;
                  try {
-                     const csv = [headers.join(',')].concat(rowsToExport.map(r => headers.map(h => escape(r[h])).join(','))).join('\n');
+                     const csvRows = [headers.join(',')]; // Start with header row
+                     rowsToExport.forEach(r => {
+                         csvRows.push(headers.map(h => escape(r[h])).join(','));
+                     });
+                     const csv = csvRows.join('\n'); // Join all rows with newline
+
                      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
                      const url = URL.createObjectURL(blob);
                      const a = document.createElement('a');
+                     a.style.display = 'none'; // Hide the link
                      a.href = url;
-                     a.download = `prospects_${campaignName}_${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
+                     // More descriptive filename
+                     a.download = `prospects_${campaignName}_${all?'all':'filtered'}_${new Date().toISOString().split('T')[0]}.csv`; // Add date
                      document.body.appendChild(a);
                      a.click();
+                     // Cleanup
+                     window.URL.revokeObjectURL(url);
                      document.body.removeChild(a);
-                     URL.revokeObjectURL(url);
                  } catch (e) {
                      console.error("Error generating or downloading CSV:", e);
                      alert("Failed to generate CSV. Check console for details.");
@@ -376,21 +450,25 @@
   </script>
 
   <style>
-    td, th { white-space: nowrap; }
+    td, th { white-space: nowrap; padding: 0.5rem 0.75rem; vertical-align: top; } /* Add padding & align */
+    td textarea, td input, td select { font-size: 0.75rem; padding: 0.25rem 0.5rem;} /* Consistent input styling */
     td textarea { min-height: 2.25rem; }
+    /* Style for loading state */
+    [x-cloak] { display: none !important; }
   </style>
 </head>
 
 <body class="h-full bg-gray-50 text-gray-900">
-  <div class="max-w-7xl mx-auto p-4" x-data="prospectApp()" x-init="init()">
+  <div class="max-w-7xl mx-auto p-4" x-data="prospectApp()" x-init="init()" x-cloak>
+
     <div class="flex items-start sm:items-center justify-between gap-4 flex-col sm:flex-row">
            <div>
              <h1 class="text-2xl font-semibold">Media Prospect Manager</h1>
              <p class="text-sm text-gray-600">Now powered by Supabase — realtime enabled and stable.</p>
            </div>
            <div class="flex gap-2">
-             <button @click="exportCSV(false)" class="px-3 py-2 text-sm rounded-md border bg-white hover:bg-gray-50">Export Filtered CSV</button>
-             <button @click="exportCSV(true)" class="px-3 py-2 text-sm rounded-md border bg-white hover:bg-gray-50">Export All CSV</button>
+             <button @click="exportCSV(false)" class="px-3 py-2 text-sm rounded-md border bg-white hover:bg-gray-50 disabled:opacity-50" :disabled="!db || db.length === 0">Export Filtered CSV</button>
+             <button @click="exportCSV(true)" class="px-3 py-2 text-sm rounded-md border bg-white hover:bg-gray-50 disabled:opacity-50" :disabled="!db || db.length === 0">Export All CSV</button>
            </div>
          </div>
 
@@ -416,22 +494,22 @@
                    </div>
                    <div class="grid md:grid-cols-3 gap-3">
                      <div class="md:col-span-2">
-                       <label class="block text-sm text-gray-700 mb-1">Paste list of domains or URLs (one per line)</label>
-                       <textarea x-model="pasteInput"
+                       <label class="block text-sm text-gray-700 mb-1" for="paste-input">Paste list of domains or URLs (one per line)</label>
+                       <textarea id="paste-input" x-model="pasteInput"
                                  placeholder="example.com&#10;https://www.site.com/about&#10;blog.domain.co.uk"
-                                 class="w-full border rounded-md p-2 h-32"></textarea>
+                                 class="w-full border rounded-md p-2 h-32 focus:ring-blue-500 focus:border-blue-500"></textarea>
                        <p class="text-xs text-gray-500 mt-1">Cleans to root domains, lowercases, and skips duplicates. Assign a campaign on the right.</p>
                      </div>
 
                      <div>
-                       <label class="block text-sm text-gray-700 mb-1 flex justify-between items-center">
+                       <label class="block text-sm text-gray-700 mb-1 flex justify-between items-center" for="campaign-select">
                          <span>Assign to Campaign</span>
                          <button @click="showNewCampaignInput = !showNewCampaignInput" x-show="!showNewCampaignInput"
                                  class="text-xs text-blue-600 hover:underline focus:outline-none">
                            + New
                          </button>
                        </label>
-                       <select x-model="addFormCampaign" class="w-full border rounded-md p-2">
+                       <select id="campaign-select" x-model="addFormCampaign" class="w-full border rounded-md p-2 focus:ring-blue-500 focus:border-blue-500">
                          <option value="">-- Select Campaign --</option>
                          <template x-for="campaign in campaigns" :key="campaign">
                            <option :value="campaign" x-text="campaign"></option>
@@ -441,7 +519,7 @@
 
                        <div x-show="showNewCampaignInput" class="mt-2 flex gap-2" x-transition>
                          <input type="text" x-model="newCampaignName" placeholder="New campaign name..."
-                                class="flex-grow border rounded-md p-1 text-sm">
+                                class="flex-grow border rounded-md p-1 text-sm focus:ring-blue-500 focus:border-blue-500">
                          <button @click="addNewCampaign()"
                                 class="px-2 py-1 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700">Add</button>
                          <button @click="showNewCampaignInput = false; newCampaignName = ''"
@@ -449,15 +527,15 @@
                        </div>
 
                        <button @click="ingest()"
-                               class="mt-4 w-full px-3 py-2 rounded-md text-white bg-gray-900 hover:bg-gray-800">
+                               class="mt-4 w-full px-3 py-2 rounded-md text-white bg-gray-900 hover:bg-gray-800 disabled:opacity-50"
+                               :disabled="!addFormCampaign || !pasteInput.trim()">
                          Add Prospects
                        </button>
                      </div>
                    </div>
 
                    <template x-if="ingestSummary.total > 0">
-                     <div class="mt-3 text-sm">
-                       <span class="inline-block mr-3">Total Lines: <strong x-text="ingestSummary.total"></strong></span>
+                     <div class="mt-3 text-sm border-t pt-3"> <span class="inline-block mr-3">Total Lines: <strong x-text="ingestSummary.total"></strong></span>
                        <span class="inline-block mr-3 text-green-700">Added: <strong x-text="ingestSummary.newCount"></strong></span>
                        <span class="inline-block mr-3 text-amber-700">Duplicates: <strong x-text="ingestSummary.dupeCount"></strong></span>
                        <span class="inline-block text-red-700" x-show="ingestSummary.invalidCount > 0">Invalid/Skipped: <strong x-text="ingestSummary.invalidCount"></strong></span>
@@ -465,62 +543,58 @@
                    </template>
             </div>
 
-           <div class="mt-6 grid grid-cols-1 md:grid-cols-4 gap-3">
-                 <div class="md:col-span-2">
-                     <label class="text-sm text-gray-700">Search</label>
-                     <input type="search" x-model.debounce.300ms="search"
-                            placeholder="Search domain, contact info, notes, or campaign..."
-                            class="w-full border rounded-md p-2"/>
+           <div class="mt-6 grid grid-cols-1 md:grid-cols-4 gap-3 items-end"> <div class="md:col-span-2">
+                     <label class="text-sm text-gray-700 block mb-1" for="search-input">Search</label> <input id="search-input" type="search" x-model.debounce.300ms="search"
+                            placeholder="Search domain, contact, notes, campaign..."
+                            class="w-full border rounded-md p-2 focus:ring-blue-500 focus:border-blue-500"/>
                    </div>
                    <div>
-                     <label class="text-sm text-gray-700">Filter by Campaign</label>
-                     <select x-model="selectedCampaign" class="w-full border rounded-md p-2">
+                     <label class="text-sm text-gray-700 block mb-1" for="filter-campaign">Filter by Campaign</label>
+                     <select id="filter-campaign" x-model="selectedCampaign" class="w-full border rounded-md p-2 focus:ring-blue-500 focus:border-blue-500">
                        <option value="all">All Campaigns</option>
                        <template x-for="campaign in campaigns" :key="campaign">
                          <option :value="campaign" x-text="campaign"></option>
                        </template>
-                       <option value="">Unassigned</option> </select>
+                       <option value="">Unassigned</option>
+                     </select>
                    </div>
                    <div>
-                     <label class="text-sm text-gray-700">Filter by Status</label>
-                     <select x-model="filterStatus" class="w-full border rounded-md p-2">
+                     <label class="text-sm text-gray-700 block mb-1" for="filter-status">Filter by Status</label>
+                     <select id="filter-status" x-model="filterStatus" class="w-full border rounded-md p-2 focus:ring-blue-500 focus:border-blue-500">
                        <option value="">All</option>
                        <template x-for="s in statuses" :key="'filter-'+s.value">
                          <option :value="s.value" x-text="s.label"></option>
                        </template>
                      </select>
                    </div>
-                   <div class="flex items-end">
-                     <label class="inline-flex items-center gap-2">
-                       <input type="checkbox" x-model="hideRejected" class="rounded border-gray-300">
+                   <div class="pt-1"> <label class="inline-flex items-center gap-2">
+                       <input type="checkbox" x-model="hideRejected" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
                        <span class="text-sm">Hide Rejected</span>
                      </label>
                    </div>
            </div>
 
-          <div class="mt-4 overflow-auto rounded-lg border bg-white">
-              <table class="min-w-full text-sm">
-                 <thead class="bg-gray-50 text-gray-600">
+          <div class="mt-4 overflow-auto rounded-lg border bg-white shadow-sm"> <table class="min-w-full text-sm table-fixed"> <thead class="bg-gray-50 text-gray-600">
                      <tr>
-                       <th class="p-2 text-left">Domain</th>
-                       <th class="p-2 text-left">Status</th>
-                       <th class="p-2 text-left">Contact Info</th>
-                       <th class="p-2 text-left">Notes</th>
-                       <th class="p-2 text-left">Date Added</th>
-                       <th class="p-2 text-left">Campaign</th>
-                       <th class="p-2 text-left">Actions</th>
-                     </tr>
+                       <th class="p-2 text-left w-1/6">Domain</th> <th class="p-2 text-left w-1/6">Status</th>
+                       <th class="p-2 text-left w-1/6">Contact Info</th>
+                       <th class="p-2 text-left w-2/6">Notes</th> <th class="p-2 text-left w-1/6">Date Added</th>
+                       <th class="p-2 text-left w-1/6">Campaign</th>
+                       <th class="p-2 text-left w-[50px]">Actions</th> </tr>
                    </thead>
-                   <tbody>
-                     <template x-if="!db || db.length === 0"> <tr><td colspan="7" class="p-4 text-center text-gray-500">Loading prospects or none found...</td></tr>
+                   <tbody class="divide-y divide-gray-200"> <template x-if="!db"> <tr><td colspan="7" class="p-4 text-center text-gray-500">Loading...</td></tr>
+                     </template>
+                     <template x-if="db && db.length === 0">
+                        <tr><td colspan="7" class="p-4 text-center text-gray-500">No prospects found. Add some!</td></tr>
                      </template>
                      <template x-if="db && db.length > 0 && filtered.length === 0">
                        <tr><td colspan="7" class="p-4 text-center text-gray-500">No prospects match your current filters.</td></tr>
                      </template>
                      <template x-for="p in filtered" :key="p.id">
-                       <tr class="border-t hover:bg-gray-50"> <td class="p-2 font-medium"><a :href="'http://' + p.domain" target="_blank" x-text="p.domain" class="text-blue-600 hover:underline"></a></td>
-                         <td class="p-2">
-                           <select class="border rounded-md p-1 text-xs" x-model="p.status"
+                       <tr class="hover:bg-gray-50">
+                         <td class="p-2 font-medium truncate"><a :href="'https://' + p.domain" target="_blank" x-text="p.domain" class="text-blue-600 hover:underline" :title="p.domain"></a></td> <td class="p-2">
+                           <select class="w-full border rounded-md p-1 text-xs focus:ring-blue-500 focus:border-blue-500"
+                                   x-model="p.status"
                                    @change="updateProspect(p)">
                              <template x-for="s in statuses" :key="s.value">
                                <option :value="s.value" x-text="s.label"></option>
@@ -528,13 +602,17 @@
                            </select>
                          </td>
                          <td class="p-2">
-                           <input type="text" class="w-48 max-w-full border rounded-md p-1 text-xs" x-model.lazy="p.contact" @change="updateProspect(p)">
+                           <input type="text" class="w-full border rounded-md p-1 text-xs focus:ring-blue-500 focus:border-blue-500"
+                                  x-model.lazy="p.contact"
+                                  @change="updateProspect(p)">
                          </td>
                          <td class="p-2">
-                           <textarea class="w-64 max-w-full border rounded-md p-1 text-xs" x-model.lazy="p.notes" @change="updateProspect(p)"></textarea>
-                         </td>
-                         <td class="p-2 text-gray-600 text-xs" x-text="formatDate(p.created_at)"></td> <td class="p-2">
-                           <select class="border rounded-md p-1 text-xs" x-model="p.campaign"
+                           <textarea class="w-full border rounded-md p-1 text-xs focus:ring-blue-500 focus:border-blue-500" rows="1" x-model.lazy="p.notes"
+                                     @change="updateProspect(p)"
+                                     @input="event.target.style.height = 'auto'; event.target.style.height = event.target.scrollHeight + 'px'"></textarea> </td>
+                         <td class="p-2 text-gray-600 text-xs truncate" x-text="formatDate(p.created_at)" :title="formatDate(p.created_at)"></td> <td class="p-2">
+                           <select class="w-full border rounded-md p-1 text-xs focus:ring-blue-500 focus:border-blue-500"
+                                   x-model="p.campaign"
                                    @change="updateProspect(p)">
                              <option value="">Unassigned</option>
                              <template x-for="cName in campaigns" :key="cName">
@@ -542,9 +620,7 @@
                              </template>
                            </select>
                          </td>
-                         <td class="p-2">
-                           <button class="text-xs text-red-600 hover:underline" @click="deleteProspect(p.id)">Delete</button>
-                         </td>
+                         <td class="p-2 text-center"> <button class="text-xs text-red-600 hover:text-red-800 hover:underline" @click="deleteProspect(p.id)" title="Delete Prospect">X</button> </td>
                        </tr>
                      </template>
                    </tbody>
