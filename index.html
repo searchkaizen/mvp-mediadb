@@ -3,13 +3,417 @@
 <head>
   <meta charset="utf-8" />
   <title>Media Prospect Manager</title>
+  <base target="_top">
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="Manage and track media outreach prospects with a real-time Supabase database.">
 
-  <!-- Tailwind -->
-  <script defer src="https://cdn.tailwindcss.com"></script>
+  <script defer src="https://cdn.tailwindcss.com"></script> 
+  
+  <script defer src="https://cdn.jsdelivr.net/npm/@supabase-js@2.43.4/dist/umd/supabase.min.js"></script> 
+  
+  <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script> 
+  
+  <script defer> 
+    document.addEventListener('alpine:init', () => {
+      // This code now runs AFTER Supabase and Alpine scripts have executed
+      console.log("Alpine:init fired. Is Supabase ready?", typeof supabase); 
+      
+      // Initialize Supabase Client HERE
+      // Add a check just in case Supabase somehow failed to load
+      if (typeof supabase === 'undefined' || !supabase.createClient) {
+          console.error("CRITICAL: Supabase library not loaded correctly!");
+          alert("Error: Supabase failed to load. Realtime and data operations will fail.");
+          // You might want to prevent Alpine from initializing further
+          return; 
+      }
+      const { createClient } = supabase; 
+      const supabaseClient = createClient(
+        'https://mfjymrrykhvfkivtvgit.supabase.co', 
+        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1manltcnJ5a2h2ZmtpdnR2Z2l0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjEwNzY1MzksImV4cCI6MjA3NjY1MjUzOX0.wgn7fZgL8vmedKWmJ8BNfwbaOzZ4ZFltqcDrkEDvsnw' // Use const
+      );
+      console.log("supabaseClient created inside listener:", !!supabaseClient); 
 
-  <!-- Supabase (must load before your app) -->
-  <script src="https://cdn.jsdelivr.net/npm/@supabase-js@2.43.4/dist/umd/supabase.min.js"></script>
+      // Define Alpine Data HERE
+      Alpine.data('prospectApp', () => {
+        console.log("Defining prospectApp data for Alpine");
+        
+        // --- PASTE your entire 'return { ... }' object HERE ---
+        // (Make sure all methods use the supabaseClient defined above)
+       return {
+            db: [],
+            pasteInput: '',
+            ingestSummary: { total: 0, newCount: 0, dupeCount: 0, invalidCount: 0 },
+            search: '',
+            filterStatus: '',
+            hideRejected: false,
+            showAddForm: false,
+            addFormCampaign: '',
+            campaigns: [],
+            selectedCampaign: 'all',
+            newCampaignName: '',
+            showNewCampaignInput: false,
+            statuses: [
+              { value: 'unvetted', label: 'Unvetted' },
+              { value: 'good', label: 'Good Fit' },
+              { value: 'rejected', label: 'Rejected' },
+              { value: 'contacted', label: 'Contacted' },
+              { value: 'done', label: 'Done' }
+            ],
+
+            async init() {
+              console.log("Alpine init() called by x-init");
+              await this.load();
+              this.deriveCampaigns();
+              this.initSubscription();
+            },
+             initSubscription() {
+                supabaseClient.removeAllChannels();
+                console.log("Attempting to subscribe to real-time updates...");
+                const channel = supabaseClient.channel('public:mediadb');
+
+                channel.on(
+                  'postgres_changes',
+                  { event: '*', schema: 'public', table: 'mediadb' },
+                  (payload) => {
+                    try {
+                      console.log('✅ Real-time change received!', payload.eventType, payload.new || payload.old);
+                      this.handleRealtimeChange(payload);
+                    } catch (error) {
+                      console.error("❌ Error processing real-time event:", error, payload);
+                    }
+                  }
+                ).subscribe((status, err) => {
+                  if (status === 'SUBSCRIBED') {
+                    console.log('✅ Successfully subscribed to real-time updates!');
+                  } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+                    console.error(`❌ Realtime connection ${status}:`, err || 'No error details provided.');
+                    console.log('🔄 Attempting to re-subscribe in 5 seconds...');
+                    // Add cleanup before retrying - crucial to prevent duplicate listeners on retry
+                    supabaseClient.removeChannel(channel).then(() => {
+                        // Check if component still seems valid before retrying
+                         if (this && typeof this.initSubscription === 'function' && document.body.contains(this.$el)) { // Check if element is still in DOM
+                           setTimeout(() => this.initSubscription(), 5000);
+                        } else {
+                           console.log("Component likely unmounted or invalid, stopping retry.");
+                        }
+                    }).catch(removeErr => {
+                         console.error("Error removing channel before retry:", removeErr);
+                         // Still attempt retry? Risky but might be necessary if removeChannel fails unexpectedly
+                         setTimeout(() => this.initSubscription(), 5000); 
+                    });
+                  } else {
+                    console.info('ℹ️ Realtime subscription status:', status);
+                  }
+                });
+            },
+
+            handleRealtimeChange(payload) {
+                try {
+                    let campaignListChanged = false;
+                    const eventType = payload.eventType;
+                    const newData = payload.new;
+                    const oldData = payload.old;
+
+                    console.log(`Handling Realtime ${eventType}...`); // Log which event type
+
+                    if (eventType === 'INSERT') {
+                        if (!this.db.some(item => item.id === newData.id)) {
+                            this.db = [newData, ...this.db]; // Prepend new item
+                            console.log(`Added new item ID ${newData.id}`);
+                            if (newData.campaign && !this.campaigns.includes(newData.campaign)) campaignListChanged = true;
+                        } else {
+                            console.warn("Realtime: Received INSERT for existing ID:", newData.id);
+                        }
+                    } else if (eventType === 'UPDATE') {
+                        const index = this.db.findIndex(r => r.id === newData.id);
+                        if (index !== -1) {
+                             // Use map for guaranteed new array reference for Alpine reactivity
+                             this.db = this.db.map(item => item.id === newData.id ? newData : item);
+                             console.log(`Updated item ID ${newData.id}`);
+                            if (newData.campaign && !this.campaigns.includes(newData.campaign)) campaignListChanged = true;
+                        } else {
+                            console.warn("Realtime: Received UPDATE for non-existent ID, adding:", newData.id);
+                            this.db = [newData, ...this.db]; // Add if missing
+                        }
+                    } else if (eventType === 'DELETE') {
+                        const initialLength = this.db.length;
+                        this.db = this.db.filter(r => r.id !== oldData.id);
+                        if (this.db.length < initialLength) {
+                            console.log(`Deleted item ID ${oldData.id}`);
+                            campaignListChanged = true;
+                        } else {
+                             console.warn("Realtime: Received DELETE for non-existent ID:", oldData.id);
+                        }
+                    }
+
+                    if (campaignListChanged) {
+                        console.log("Campaign list potentially changed, re-deriving...");
+                        this.deriveCampaigns();
+                    }
+                } catch (error) {
+                    console.error("Error inside handleRealtimeChange logic:", error, payload);
+                }
+            },
+
+            deriveCampaigns() {
+                const allCampaigns = this.db
+                    .map(r => r.campaign)
+                    .filter(Boolean);
+                const uniqueCampaigns = [...new Set(allCampaigns)].sort((a, b) => a.localeCompare(b));
+                // Only update if the list actually changed to prevent unnecessary Alpine updates
+                if (JSON.stringify(this.campaigns) !== JSON.stringify(uniqueCampaigns)) {
+                    this.campaigns = uniqueCampaigns;
+                    console.log("Updated campaigns list:", this.campaigns);
+                }
+            },
+
+            async load() {
+                 console.log("load() called.");
+                 if (!supabaseClient) {
+                     console.error("supabaseClient is Falsy in load()!");
+                     alert("Critical error: Supabase client not ready.");
+                     return; 
+                 }
+                 console.log("Loading initial data...");
+                 try {
+                     const { data, error, status } = await supabaseClient
+                         .from('mediadb')
+                         .select('*')
+                         .order('created_at', { ascending: false });
+
+                     if (error && status !== 406) { 
+                         console.error('Error loading data:', status, error.message);
+                         alert('Error loading data. Check console.');
+                     } else {
+                         console.log(`Data loaded successfully (${data?.length || 0} rows). Status: ${status}`);
+                         this.db = data || []; // Ensure db is always an array, even if data is null
+                     }
+                 } catch (err) {
+                     console.error("Exception during load():", err);
+                     alert("Failed to load data due to an exception. Check console.");
+                 }
+            },
+             // --- Paste ALL other methods (ingest, update, delete, helpers) HERE ---
+            async ingest() {
+                const campaignToAssign = this.addFormCampaign === 'unassigned' ? '' : this.addFormCampaign;
+                if (!this.addFormCampaign) {
+                    alert('Please select a campaign to assign these prospects to.');
+                    return;
+                }
+                const lines = (this.pasteInput || '').split(/[\r\n]+/).map(l => l.trim()).filter(Boolean);
+                if (lines.length === 0) {
+                    alert('Paste input is empty or contains only whitespace.');
+                    return;
+                }
+
+                console.log(`Attempting to ingest ${lines.length} lines for campaign: ${campaignToAssign || 'Unassigned'}`);
+                let newRows = [];
+                let currentDomains = new Set(this.db.map(r => r.domain?.toLowerCase()));
+                let skippedDupes = 0;
+                let skippedInvalid = 0;
+
+                for (const line of lines) {
+                    const domain = this.normalizeDomain(line.split(/[,;\s\t]/)[0]);
+                    if (!domain) {
+                        console.warn(`Skipping invalid input line: "${line}"`);
+                        skippedInvalid++;
+                        continue;
+                    }
+                    const lowerDomain = domain.toLowerCase();
+                    if (currentDomains.has(lowerDomain) || newRows.some(r => r.domain.toLowerCase() === lowerDomain)) {
+                        console.log(`Skipping duplicate domain: ${domain}`);
+                        skippedDupes++;
+                        continue;
+                    }
+
+                    newRows.push({
+                        domain: domain,
+                        campaign: campaignToAssign,
+                        status: 'unvetted'
+                    });
+                }
+
+                const dupeCount = skippedDupes;
+                const invalidCount = skippedInvalid;
+                const newCount = newRows.length;
+                this.ingestSummary = { total: lines.length, newCount, dupeCount, invalidCount };
+
+                if (newCount > 0) {
+                    console.log(`Inserting ${newCount} unique new rows...`);
+                    const { error } = await supabaseClient.from('mediadb').insert(newRows);
+
+                    if (error) {
+                        console.error('Error creating prospects:', error.message);
+                        alert('Error creating prospects. Check console.');
+                    } else {
+                        console.log("Prospects inserted successfully via API call.");
+                        this.pasteInput = '';
+                        this.showAddForm = false;
+                        // Realtime should add the rows, maybe don't force reload unless necessary
+                        // await this.load(); 
+                        // this.deriveCampaigns();
+                    }
+                } else {
+                    console.log("No unique new domains found to insert.");
+                    alert(`Processed ${lines.length} lines. Found ${dupeCount} duplicates and ${skippedInvalid} invalid entries. No new prospects added.`);
+                }
+            },
+
+            async updateProspect(p) {
+                console.log(`Attempting to update prospect ID: ${p.id}`);
+                const { error } = await supabaseClient
+                    .from('mediadb')
+                    .update({
+                        status: p.status,
+                        contact: p.contact,
+                        notes: p.notes,
+                        campaign: p.campaign
+                    })
+                    .eq('id', p.id);
+
+                if (error) {
+                    console.error('Error updating prospect:', error.message);
+                    alert('Error updating prospect. Check console.');
+                } else {
+                    console.log(`Prospect ${p.id} updated successfully via API call.`);
+                     if(p.campaign && !this.campaigns.includes(p.campaign)) {
+                          this.deriveCampaigns();
+                      }
+                }
+            },
+
+            async deleteProspect(id) {
+                if (!confirm(`Are you sure you want to delete prospect ID: ${id}?`)) return;
+                console.log(`Attempting to delete prospect ID: ${id}`);
+                const { error } = await supabaseClient
+                    .from('mediadb')
+                    .delete()
+                    .eq('id', id);
+
+                if (error) {
+                    console.error('Error deleting prospect:', error.message);
+                    alert('Error deleting prospect. Check console.');
+                } else {
+                    console.log(`Prospect ${id} deleted successfully via API call.`);
+                    // Realtime should remove the item
+                }
+            },
+
+             normalizeDomain(input) {
+                // Keep the robust version
+                let s = (input || '').trim().toLowerCase();
+                s = s.replace(/^(?:https?:\/\/|ftp:\/\/)?(?:www\.)?/i, ''); 
+                s = s.replace(/^[^@]+@/, ''); 
+                s = s.split(/[:/?#]/)[0]; 
+                s = s.replace(/\.$/, ''); 
+                if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/i.test(s)) return null;
+                return s;
+            },
+            addNewCampaign() {
+                 // Keep the robust version
+                const name = this.newCampaignName.trim();
+                if (!name) { alert('Please enter a valid campaign name.'); return; }
+                if (this.campaigns.some(c => c.toLowerCase() === name.toLowerCase())) { 
+                    alert(`Campaign "${name}" already exists.`); 
+                    return; 
+                }
+                this.campaigns.push(name); 
+                this.campaigns.sort((a, b) => a.localeCompare(b)); 
+                this.addFormCampaign = name; 
+                this.newCampaignName = '';
+                this.showNewCampaignInput = false;
+            },
+            get filtered() {
+                 // Keep the robust version
+                let rows = this.db; 
+                if (this.selectedCampaign === '') { 
+                   rows = rows.filter(r => !r.campaign); 
+                } else if (this.selectedCampaign !== 'all') { 
+                   rows = rows.filter(r => r.campaign === this.selectedCampaign); 
+                }
+                if (this.filterStatus) rows = rows.filter(r => r.status === this.filterStatus); 
+                if (this.hideRejected) rows = rows.filter(r => r.status !== 'rejected'); 
+                const q = this.search.trim().toLowerCase();
+                if (q) { 
+                    rows = rows.filter(r =>
+                      (r.domain?.toLowerCase() || '').includes(q) || 
+                      (r.contact?.toLowerCase() || '').includes(q) ||
+                      (r.notes?.toLowerCase() || '').includes(q) ||
+                      (r.campaign?.toLowerCase() || '').includes(q)
+                    );
+                }
+                return [...rows].sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
+            },
+            countByStatus(status) {
+                // Keep the robust version
+                let relevantData = this.db;
+                if (this.selectedCampaign === '') {
+                   relevantData = this.db.filter(r => !r.campaign);
+                } else if (this.selectedCampaign !== 'all') { 
+                   relevantData = this.db.filter(r => r.campaign === this.selectedCampaign); 
+                }
+                return relevantData.filter(r => r.status === status).length;
+            },
+            formatDate(iso) {
+                 // Keep the robust version
+                 if (!iso) return 'N/A'; 
+                 try { 
+                     const d = new Date(iso);
+                     return d.toLocaleString(undefined, { 
+                         year: 'numeric', month: 'numeric', day: 'numeric',
+                         hour: '2-digit', minute: '2-digit'
+                     });
+                 } catch (e) {
+                     console.error("Error formatting date:", iso, e);
+                     return 'Invalid Date';
+                 }
+            },
+            exportCSV(all) {
+                 // Keep the robust version
+                 let rowsToExport;
+                 let campaignName = 'all_campaigns';
+                 if (this.selectedCampaign === '') { campaignName = 'unassigned'; }
+                 else if (this.selectedCampaign !== 'all') { campaignName = this.selectedCampaign.replace(/[^a-z0-9]/gi, '_').toLowerCase(); }
+ 
+                 if (all) {
+                     rowsToExport = this.selectedCampaign !== 'all'
+                         ? this.db.filter(r => this.selectedCampaign === '' ? !r.campaign : r.campaign === this.selectedCampaign)
+                         : this.db.slice(); 
+                     rowsToExport.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+                 } else { 
+                     rowsToExport = this.filtered; 
+                     if(this.selectedCampaign !== 'all') campaignName = `filtered_${campaignName}`;
+                 } 
+ 
+                 if (!rowsToExport || rowsToExport.length === 0) { 
+                     alert("No data available to export for the current selection.");
+                     return;
+                 }
+ 
+                 const headers = ['id', 'domain', 'status', 'contact', 'notes', 'created_at', 'campaign'];
+                 const escape = v => `"${String(v === null || v === undefined ? '' : v).replace(/"/g, '""')}"`; 
+                 try { 
+                     const csv = [headers.join(',')].concat(rowsToExport.map(r => headers.map(h => escape(r[h])).join(','))).join('\n');
+                     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' }); 
+                     const url = URL.createObjectURL(blob);
+                     const a = document.createElement('a');
+                     a.href = url;
+                     a.download = `prospects_${campaignName}_${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
+                     document.body.appendChild(a); 
+                     a.click();
+                     document.body.removeChild(a); 
+                     URL.revokeObjectURL(url);
+                 } catch (e) {
+                     console.error("Error generating or downloading CSV:", e);
+                     alert("Failed to generate CSV. Check console for details.");
+                 }
+            }
+
+
+       }; // End return {}
+      }); // End Alpine.data
+    }); // End event listener
+  </script>
 
   <style>
     td, th { white-space: nowrap; }
@@ -19,105 +423,177 @@
 
 <body class="h-full bg-gray-50 text-gray-900">
   <div class="max-w-7xl mx-auto p-4" x-data="prospectApp()" x-init="init()">
+    
+    <div class="flex items-start sm:items-center justify-between gap-4 flex-col sm:flex-row">
+           <div>
+             <h1 class="text-2xl font-semibold">Media Prospect Manager</h1>
+             <p class="text-sm text-gray-600">Now powered by Supabase — realtime enabled and stable.</p>
+           </div>
+           <div class="flex gap-2">
+             <button @click="exportCSV(false)" class="px-3 py-2 text-sm rounded-md border bg-white hover:bg-gray-50">Export Filtered CSV</button>
+             <button @click="exportCSV(true)" class="px-3 py-2 text-sm rounded-md border bg-white hover:bg-gray-50">Export All CSV</button>
+           </div>
+         </div>
 
-    <h1 class="text-2xl font-semibold mb-2">Media Prospect Manager</h1>
-    <p class="text-sm text-gray-600 mb-4">Supabase + Alpine.js realtime demo</p>
+         <div class="grid grid-cols-2 md:grid-cols-6 gap-3 mt-4">
+             <template x-for="s in statuses" :key="s.value">
+               <div class="rounded-lg border bg-white p-3">
+                 <div class="text-xs text-gray-500" x-text="s.label"></div>
+                 <div class="text-xl font-semibold" x-text="countByStatus(s.value)"></div>
+               </div>
+             </template>
+           </div>
 
-    <div class="mb-4">
-      <button @click="load()" class="px-3 py-2 rounded-md bg-gray-900 text-white hover:bg-gray-800">Reload</button>
-    </div>
+           <div class="mt-6 text-right">
+               <button @click="showAddForm = true" x-show="!showAddForm" class="px-4 py-2 rounded-md text-white bg-gray-900 hover:bg-gray-800">
+                 Add New Prospects
+               </button>
+             </div>
 
-    <div class="overflow-auto rounded-lg border bg-white">
-      <table class="min-w-full text-sm">
-        <thead class="bg-gray-50 text-gray-600">
-          <tr>
-            <th class="p-2 text-left">Domain</th>
-            <th class="p-2 text-left">Status</th>
-          </tr>
-        </thead>
-        <tbody>
-          <template x-if="db.length === 0">
-            <tr><td colspan="2" class="p-4 text-center text-gray-500">No records yet...</td></tr>
-          </template>
-          <template x-for="r in db" :key="r.id">
-            <tr class="border-t">
-              <td class="p-2" x-text="r.domain"></td>
-              <td class="p-2" x-text="r.status"></td>
-            </tr>
-          </template>
-        </tbody>
-      </table>
-    </div>
+            <div class="mt-6 rounded-lg border bg-white p-4" x-show="showAddForm" x-transition>
+                 <div class="flex justify-between items-center mb-3">
+                     <h2 class="font-medium">Add Prospects (Paste Only)</h2>
+                     <button @click="showAddForm = false; ingestSummary = { total: 0 }; pasteInput = ''" class="text-sm text-gray-600 hover:underline">Cancel</button>
+                   </div>
+                   <div class="grid md:grid-cols-3 gap-3">
+                     <div class="md:col-span-2">
+                       <label class="block text-sm text-gray-700 mb-1">Paste list of domains or URLs (one per line)</label>
+                       <textarea x-model="pasteInput"
+                                 placeholder="example.com&#10;https://www.site.com/about&#10;blog.domain.co.uk"
+                                 class="w-full border rounded-md p-2 h-32"></textarea>
+                       <p class="text-xs text-gray-500 mt-1">Cleans to root domains, lowercases, and skips duplicates. Assign a campaign on the right.</p>
+                     </div>
+
+                     <div>
+                       <label class="block text-sm text-gray-700 mb-1 flex justify-between items-center">
+                         <span>Assign to Campaign</span>
+                         <button @click="showNewCampaignInput = !showNewCampaignInput" x-show="!showNewCampaignInput"
+                                 class="text-xs text-blue-600 hover:underline focus:outline-none">
+                           + New
+                         </button>
+                       </label>
+                       <select x-model="addFormCampaign" class="w-full border rounded-md p-2">
+                         <option value="">-- Select Campaign --</option>
+                         <template x-for="campaign in campaigns" :key="campaign">
+                           <option :value="campaign" x-text="campaign"></option>
+                         </template>
+                         <option value="unassigned">Unassigned</option>
+                       </select>
+
+                       <div x-show="showNewCampaignInput" class="mt-2 flex gap-2" x-transition>
+                         <input type="text" x-model="newCampaignName" placeholder="New campaign name..."
+                                class="flex-grow border rounded-md p-1 text-sm">
+                         <button @click="addNewCampaign()"
+                                class="px-2 py-1 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700">Add</button>
+                         <button @click="showNewCampaignInput = false; newCampaignName = ''"
+                                class="px-2 py-1 text-sm text-gray-600 hover:underline">Cancel</button>
+                       </div>
+
+                       <button @click="ingest()"
+                               class="mt-4 w-full px-3 py-2 rounded-md text-white bg-gray-900 hover:bg-gray-800">
+                         Add Prospects
+                       </button>
+                     </div>
+                   </div>
+
+                   <template x-if="ingestSummary.total > 0">
+                     <div class="mt-3 text-sm">
+                       <span class="inline-block mr-3">Total Lines: <strong x-text="ingestSummary.total"></strong></span>
+                       <span class="inline-block mr-3 text-green-700">Added: <strong x-text="ingestSummary.newCount"></strong></span>
+                       <span class="inline-block mr-3 text-amber-700">Duplicates: <strong x-text="ingestSummary.dupeCount"></strong></span>
+                       <span class="inline-block text-red-700" x-show="ingestSummary.invalidCount > 0">Invalid/Skipped: <strong x-text="ingestSummary.invalidCount"></strong></span>
+                     </div>
+                   </template>
+            </div>
+
+           <div class="mt-6 grid grid-cols-1 md:grid-cols-4 gap-3">
+                 <div class="md:col-span-2">
+                     <label class="text-sm text-gray-700">Search</label>
+                     <input type="search" x-model.debounce.300ms="search"
+                            placeholder="Search domain, contact info, notes, or campaign..."
+                            class="w-full border rounded-md p-2"/>
+                   </div>
+                   <div>
+                     <label class="text-sm text-gray-700">Filter by Campaign</label>
+                     <select x-model="selectedCampaign" class="w-full border rounded-md p-2">
+                       <option value="all">All Campaigns</option>
+                       <template x-for="campaign in campaigns" :key="campaign">
+                         <option :value="campaign" x-text="campaign"></option>
+                       </template>
+                       <option value="">Unassigned</option> </select>
+                   </div>
+                   <div>
+                     <label class="text-sm text-gray-700">Filter by Status</label>
+                     <select x-model="filterStatus" class="w-full border rounded-md p-2">
+                       <option value="">All</option>
+                       <template x-for="s in statuses" :key="'filter-'+s.value">
+                         <option :value="s.value" x-text="s.label"></option>
+                       </template>
+                     </select>
+                   </div>
+                   <div class="flex items-end">
+                     <label class="inline-flex items-center gap-2">
+                       <input type="checkbox" x-model="hideRejected" class="rounded border-gray-300">
+                       <span class="text-sm">Hide Rejected</span>
+                     </label>
+                   </div>
+           </div>
+
+          <div class="mt-4 overflow-auto rounded-lg border bg-white">
+              <table class="min-w-full text-sm">
+                 <thead class="bg-gray-50 text-gray-600">
+                     <tr>
+                       <th class="p-2 text-left">Domain</th>
+                       <th class="p-2 text-left">Status</th>
+                       <th class="p-2 text-left">Contact Info</th>
+                       <th class="p-2 text-left">Notes</th>
+                       <th class="p-2 text-left">Date Added</th>
+                       <th class="p-2 text-left">Campaign</th>
+                       <th class="p-2 text-left">Actions</th>
+                     </tr>
+                   </thead>
+                   <tbody>
+                     <template x-if="!db || db.length === 0"> <tr><td colspan="7" class="p-4 text-center text-gray-500">Loading prospects or none found...</td></tr>
+                     </template>
+                     <template x-if="db && db.length > 0 && filtered.length === 0">
+                       <tr><td colspan="7" class="p-4 text-center text-gray-500">No prospects match your current filters.</td></tr>
+                     </template>
+                     <template x-for="p in filtered" :key="p.id">
+                       <tr class="border-t hover:bg-gray-50"> <td class="p-2 font-medium"><a :href="'http://' + p.domain" target="_blank" x-text="p.domain" class="text-blue-600 hover:underline"></a></td>
+                         <td class="p-2">
+                           <select class="border rounded-md p-1 text-xs" x-model="p.status"
+                                   @change="updateProspect(p)">
+                             <template x-for="s in statuses" :key="s.value">
+                               <option :value="s.value" x-text="s.label"></option>
+                             </template>
+                           </select>
+                         </td>
+                         <td class="p-2">
+                           <input type="text" class="w-48 max-w-full border rounded-md p-1 text-xs" x-model.lazy="p.contact" @change="updateProspect(p)">
+                         </td>
+                         <td class="p-2">
+                           <textarea class="w-64 max-w-full border rounded-md p-1 text-xs" x-model.lazy="p.notes" @change="updateProspect(p)"></textarea>
+                         </td>
+                         <td class="p-2 text-gray-600 text-xs" x-text="formatDate(p.created_at)"></td> <td class="p-2">
+                           <select class="border rounded-md p-1 text-xs" x-model="p.campaign"
+                                   @change="updateProspect(p)">
+                             <option value="">Unassigned</option>
+                             <template x-for="cName in campaigns" :key="cName">
+                               <option :value="cName" x-text="cName"></option>
+                             </template>
+                           </select>
+                         </td>
+                         <td class="p-2">
+                           <button class="text-xs text-red-600 hover:underline" @click="deleteProspect(p.id)">Delete</button>
+                         </td>
+                       </tr>
+                     </template>
+                   </tbody>
+              </table>
+          </div>
+
+
   </div>
 
-  <!-- Alpine LAST -->
-  <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
-
-  <!-- Your app logic -->
-  <script>
-    document.addEventListener('alpine:init', () => {
-      console.log("✅ Alpine:init fired, Supabase available:", typeof supabase);
-
-      const { createClient } = supabase;
-      const supabaseClient = createClient(
-        'https://mfjymrrykhvfkivtvgit.supabase.co',
-        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1manltcnJ5a2h2ZmtpdnR2Z2l0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjEwNzY1MzksImV4cCI6MjA3NjY1MjUzOX0.wgn7fZgL8vmedKWmJ8BNfwbaOzZ4ZFltqcDrkEDvsnw'
-      );
-
-      Alpine.data('prospectApp', () => ({
-        db: [],
-        async init() {
-          console.log('🟢 init() called');
-          await this.load();
-          this.subscribeRealtime();
-        },
-
-        async load() {
-          console.log('Loading initial data...');
-          const { data, error } = await supabaseClient
-            .from('mediadb')
-            .select('*')
-            .order('created_at', { ascending: false });
-
-          if (error) {
-            console.error('Error loading:', error.message);
-            alert(error.message);
-          } else {
-            console.log(`Loaded ${data?.length || 0} rows`);
-            this.db = data || [];
-          }
-        },
-
-        subscribeRealtime() {
-          console.log('Subscribing to realtime...');
-          supabaseClient.removeAllChannels();
-          const channel = supabaseClient
-            .channel('public:mediadb')
-            .on('postgres_changes',
-              { event: '*', schema: 'public', table: 'mediadb' },
-              (payload) => {
-                console.log('Realtime event:', payload.eventType);
-                this.handleRealtime(payload);
-              }
-            )
-            .subscribe((status, err) => {
-              if (status === 'SUBSCRIBED') console.log('✅ Realtime connected');
-              else if (err) console.error('Realtime error:', err);
-            });
-        },
-
-        handleRealtime(payload) {
-          if (payload.eventType === 'INSERT') {
-            this.db.unshift(payload.new);
-          } else if (payload.eventType === 'UPDATE') {
-            const i = this.db.findIndex(r => r.id === payload.new.id);
-            if (i > -1) this.db[i] = payload.new;
-          } else if (payload.eventType === 'DELETE') {
-            this.db = this.db.filter(r => r.id !== payload.old.id);
-          }
-        }
-      }));
-    });
-  </script>
-</body>
+  </body>
 </html>
