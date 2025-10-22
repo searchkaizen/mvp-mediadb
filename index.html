@@ -51,11 +51,10 @@
         hideRejected: false,
 
         // --- Alpine Initialization Method ---
-        // Renamed from init() to xInit() to be explicitly called by x-init, 
-        // but for this fix, we will keep it as init() and ensure it's called once.
-        async init() { // Kept name init() as per Alpine's convention
+        async init() {
           console.log("Alpine init() called.");
-          // Check for multiple calls during development/debugging
+          
+          // Safety check against multiple calls
           if (this.initialized) {
             console.warn("Init called multiple times. Skipping initialization.");
             return;
@@ -67,9 +66,16 @@
             alert("Initialization Error: Supabase client missing.");
             return;
           }
+          
+          // Load initial data
           await this.load();
           this.deriveCampaigns();
-          this.initSubscription();
+          
+          // *** FIX: Introduce a small delay to prevent Realtime race condition ***
+          console.log("Scheduling Realtime subscription with 10ms delay to prevent race condition.");
+          setTimeout(() => {
+            this.initSubscription();
+          }, 10);
         },
 
         // --- Methods ---
@@ -150,7 +156,7 @@
                 this.db = this.db.map(item => item.id === newData.id ? newData : item);
                 if (oldData.campaign !== newData.campaign || (newData.campaign && !this.campaigns.includes(newData.campaign))) campaignListChanged = true;
               } else {
-                // If update is for a row not in memory (e.g. initial load missed it), insert it.
+                // If update is for a row not in memory (e.g. initial load missed it), insert it.
                 this.db = [newData, ...this.db];
               }
             } else if (eventType === 'DELETE') {
@@ -295,7 +301,7 @@
             );
           }
           // NOTE: Data is already sorted by created_at descending from initial load/realtime,
-        // so no need to re-sort unless filtering changes the order preference.
+          // so no need to re-sort unless filtering changes the order preference.
           return rows;
         },
 
@@ -333,7 +339,7 @@
               ? this.db.filter(r => this.selectedCampaign === '' ? !r.campaign : r.campaign === this.selectedCampaign)
               : this.db.slice();
             // Ensure all rows are sorted consistently for "Export All"
-            rowsToExport.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)); 
+            rowsToExport.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)); 
           } else {
             rowsToExport = this.filtered;
             if (this.selectedCampaign !== 'all') campaignName = `filtered_${campaignName}`;
@@ -374,7 +380,7 @@
 </head>
 
 <body class="h-full bg-gray-50 text-gray-900">
-    <div class="max-w-7xl mx-auto p-4" x-data="prospectApp()" x-init="init()"> 
+    <div class="max-w-7xl mx-auto p-4" x-data="prospectApp()" x-init="init()"> 
     <div class="flex items-start sm:items-center justify-between gap-4 flex-col sm:flex-row">
       <div>
         <h1 class="text-2xl font-semibold">Media Prospect Manager</h1>
