@@ -50,7 +50,8 @@
                 filterStatus: '',
                 hideRejected: false,
                 initialized: false, // Track initialization status
-                realtimeChannel: null, // <--- ADDED: To track if a connection attempt has been made
+                realtimeChannel: null,
+                isRealtimeEnabled: false, // <--- NEW: Explicitly disable Realtime behavior
 
                 // --- Alpine Initialization Method (with delay fix) ---
                 async init() {
@@ -109,14 +110,20 @@
                     console.log('initSubscription() called.');
                     if (!supabaseClient) { console.error("Subscribe failed: supabaseClient missing"); return; }
 
-                    // <--- NEW CHECK: Only attempt subscription once
+                    // <--- IMPLEMENTATION: Disable Realtime logic if the flag is false
+                    if (!this.isRealtimeEnabled) {
+                        console.warn("Realtime updates are explicitly disabled. Skipping subscription.");
+                        return;
+                    }
+                    
+                    // Original Realtime logic (now only runs if isRealtimeEnabled is true)
                     if (this.realtimeChannel) {
                         console.warn("Realtime subscription already attempted. Skipping retry.");
                         return;
                     }
                     
                     // Ensures a clean slate before subscribing
-                    supabaseClient.removeAllChannels(); 
+                    supabaseClient.removeAllChannels(); 
                     
                     console.log("Attempting to subscribe to real-time updates (one time attempt)...");
                     
@@ -239,12 +246,22 @@
                     this.ingestSummary = { total: lines.length, newCount, dupeCount, invalidCount };
 
                     if (newCount > 0) {
-                        // Note: Realtime will handle updating this.db, so no explicit push is needed here.
-                        const { error } = await supabaseClient.from('mediadb').insert(newRows);
+                        // CHANGE: Use .insert().select() to get full row data immediately
+                        const { data, error } = await supabaseClient
+                            .from('mediadb')
+                            .insert(newRows)
+                            .select('*'); 
+
                         if (error) {
                             console.error('Error creating prospects:', error.message);
                             alert('Error creating prospects. Check console.');
                         } else {
+                            // PROACTIVE SYNC: Manually update local state and re-sort
+                            if (data && data.length > 0) {
+                                this.db = [...data, ...this.db].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+                                this.deriveCampaigns();
+                                console.log(`Manually added ${data.length} new prospects to local data store.`);
+                            }
                             this.pasteInput = '';
                             this.showAddForm = false;
                         }
@@ -254,27 +271,41 @@
                 },
 
                 async updateProspect(p) {
-                    // Note: Realtime will handle updating this.db, so no manual array manipulation is needed here.
+                    const updatePayload = {
+                        status: p.status,
+                        contact: p.contact,
+                        notes: p.notes,
+                        campaign: p.campaign
+                    };
+
                     const { error } = await supabaseClient
                         .from('mediadb')
-                        .update({
-                            status: p.status,
-                            contact: p.contact,
-                            notes: p.notes,
-                            campaign: p.campaign
-                        })
+                        .update(updatePayload)
                         .eq('id', p.id);
 
-                    if (error) alert('Error updating prospect. Check console.');
-                    // Realtime will take care of campaign change, but a dedicated re-derive is not wrong
-                    // else if (p.campaign && !this.campaigns.includes(p.campaign)) this.deriveCampaigns();
+                    if (error) {
+                        alert('Error updating prospect. Check console.');
+                    } else {
+                        // PROACTIVE SYNC: Ensure campaigns are recalculated if the campaign field changed.
+                        this.deriveCampaigns();
+                        // Local data is already updated due to Alpine's x-model binding.
+                        console.log(`Prospect ID ${p.id} updated successfully (client-side sync).`);
+                    }
                 },
 
                 async deleteProspect(id) {
                     if (!confirm(`Are you sure you want to delete prospect ID: ${id}?`)) return;
-                    // Note: Realtime will handle updating this.db
+
                     const { error } = await supabaseClient.from('mediadb').delete().eq('id', id);
-                    if (error) alert('Error deleting prospect. Check console.');
+
+                    if (error) {
+                        alert('Error deleting prospect. Check console.');
+                    } else {
+                        // PROACTIVE SYNC: Manually remove the item from the local array
+                        this.db = this.db.filter(r => r.id !== id);
+                        this.deriveCampaigns(); // Recalculate campaigns if the deleted row was the last of its campaign
+                        console.log(`Prospect with ID ${id} deleted successfully (client-side sync).`);
+                    }
                 },
 
                 normalizeDomain(input) {
@@ -358,7 +389,7 @@
                             ? this.db.filter(r => this.selectedCampaign === '' ? !r.campaign : r.campaign === this.selectedCampaign)
                             : this.db.slice();
                         // Ensure all rows are sorted consistently for "Export All"
-                        rowsToExport.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)); 
+                        rowsToExport.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)); 
                     } else {
                         rowsToExport = this.filtered;
                         if (this.selectedCampaign !== 'all') campaignName = `filtered_${campaignName}`;
@@ -399,11 +430,11 @@
 </head>
 
 <body class="h-full bg-gray-50 text-gray-900">
-    <div class="max-w-7xl mx-auto p-4" x-data="prospectApp()" x-init="init()"> 
+    <div class="max-w-7xl mx-auto p-4" x-data="prospectApp()" x-init="init()"> 
         <div class="flex items-start sm:items-center justify-between gap-4 flex-col sm:flex-row">
             <div>
                 <h1 class="text-2xl font-semibold">Media Prospect Manager</h1>
-                <p class="text-sm text-gray-600">Now powered by Supabase (realtime enabled and stable).</p>
+                <p class="text-sm text-gray-600">Powered by Supabase (Client-Side Sync).</p>
             </div>
             <div class="flex gap-2">
                 <button @click="exportCSV(false)" class="px-3 py-2 text-sm rounded-md border bg-white hover:bg-gray-50">Export Filtered CSV</button>
